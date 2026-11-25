@@ -130,7 +130,7 @@ pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
         r##"<rect x="{x0}" y="{y0}" width="{w}" height="{h}" fill="#ffffff"/>"##
     );
     for wire in &wires {
-        let (rgb, width) = class_style(net_class(&wire.signal, signals));
+        let (rgb, width) = class_style(net_class(&wire.signal, signals), false);
         let c = hex(rgb);
         for ((ax, ay), (bx, by)) in &wire.segments {
             let _ = writeln!(
@@ -144,11 +144,11 @@ pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
         let _ = writeln!(
             s,
             r#"<circle cx="{x}" cy="{y}" r="3" fill="{}"/>"#,
-            hex(class_style(net_class(sig, signals)).0)
+            hex(class_style(net_class(sig, signals), false).0)
         );
     }
     for st in &stubs {
-        let c = hex(class_style(net_class(&st.signal, signals)).0);
+        let c = hex(class_style(net_class(&st.signal, signals), false).0);
         let (x, y) = st.pos;
         let e = x + st.dir * 24;
         let anchor = if st.dir > 0 { "start" } else { "end" };

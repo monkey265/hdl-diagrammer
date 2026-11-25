@@ -52,7 +52,28 @@ pub struct App {
     console_open: bool,
     filter: String,
     console_input: String,
-    console_log: Vec<String>,
+    console_log: Vec<(LogKind, String)>,
+    console_hist: Vec<String>,
+    hist_pos: Option<usize>,
+    show_structure: bool,
+    show_objects: bool,
+}
+
+#[derive(Clone, Copy)]
+enum LogKind {
+    Echo,
+    Out,
+    Err,
+}
+
+fn questa_visuals() -> egui::Visuals {
+    let c = |r, g, b| egui::Color32::from_rgb(r, g, b);
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = c(0x12, 0x17, 0x1E);
+    v.window_fill = c(0x16, 0x1C, 0x24);
+    v.extreme_bg_color = c(0x05, 0x08, 0x0B);
+    v.selection.bg_fill = c(0x1F, 0x4E, 0x79);
+    v
 }
 
 impl Default for App {
@@ -75,10 +96,14 @@ impl Default for App {
             group_dialog: None,
             recent: recent::load(),
             script: Script::new(DEFAULT_GRID),
-            console_open: false,
+            console_open: true,
             filter: String::new(),
             console_input: String::new(),
             console_log: vec![],
+            console_hist: vec![],
+            hist_pos: None,
+            show_structure: true,
+            show_objects: true,
         }
     }
 }
@@ -115,6 +140,7 @@ impl App {
             grid: self.grid,
             history: std::mem::take(&mut self.history),
             opened: false,
+            ..Default::default()
         };
     }
 
@@ -139,38 +165,142 @@ impl App {
         r
     }
 
-    fn console_ui(&mut self, ctx: &egui::Context) {
+    /// Questa-style transcript docked at the bottom: warnings, echoed commands, results, prompt.
+    fn transcript_ui(&mut self, ui: &mut egui::Ui) {
+        if !self.console_open {
+            return;
+        }
         let mut run = None;
-        let mut open = self.console_open;
-        egui::Window::new("Tcl console")
-            .open(&mut open)
-            .show(ctx, |ui| {
+        let c = |r, g, b| egui::Color32::from_rgb(r, g, b);
+        egui::Panel::bottom("transcript")
+            .resizable(true)
+            .default_size(170.0)
+            .min_size(70.0)
+            .show(ui, |ui| {
+                inspector::title(ui, "Transcript");
+                let log_h = (ui.available_height() - 28.0).max(20.0);
                 egui::ScrollArea::vertical()
-                    .max_height(160.0)
                     .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .max_height(log_h)
                     .show(ui, |ui| {
-                        for l in &self.console_log {
-                            ui.monospace(l);
+                        for w in &self.warnings {
+                            let t = format!("# ** Warning: {w}");
+                            ui.label(
+                                egui::RichText::new(t)
+                                    .monospace()
+                                    .color(c(0xFF, 0xB7, 0x4D)),
+                            );
+                        }
+                        for (k, l) in &self.console_log {
+                            let col = match k {
+                                LogKind::Echo => c(0x9C, 0xDC, 0xFE),
+                                LogKind::Out => c(0xB5, 0xF5, 0xB5),
+                                LogKind::Err => c(0xFF, 0x6B, 0x6B),
+                            };
+                            ui.label(egui::RichText::new(l).monospace().color(col));
                         }
                     });
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.console_input)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("instances, rename u1 cpu, group G u1 u2 …"),
-                );
-                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    run = Some(std::mem::take(&mut self.console_input));
-                    r.request_focus();
-                }
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("VSIM>")
+                            .monospace()
+                            .strong()
+                            .color(c(0x9C, 0xDC, 0xFE)),
+                    );
+                    let id = egui::Id::new("transcript_input");
+                    if ui.memory(|m| m.has_focus(id)) {
+                        let key = |ui: &egui::Ui, k| {
+                            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k))
+                        };
+                        if key(ui, egui::Key::ArrowUp) && !self.console_hist.is_empty() {
+                            let at = self
+                                .hist_pos
+                                .map_or(self.console_hist.len() - 1, |p| p.saturating_sub(1));
+                            self.hist_pos = Some(at);
+                            self.console_input = self.console_hist[at].clone();
+                        }
+                        if key(ui, egui::Key::ArrowDown) {
+                            self.hist_pos = self
+                                .hist_pos
+                                .map(|p| p + 1)
+                                .filter(|&p| p < self.console_hist.len());
+                            self.console_input = self
+                                .hist_pos
+                                .map_or(String::new(), |p| self.console_hist[p].clone());
+                        }
+                        if key(ui, egui::Key::Tab) {
+                            self.complete();
+                        }
+                    }
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.console_input)
+                            .id(id)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("instances, rename u1 cpu, group G u1 u2 …"),
+                    );
+                    if r.has_focus() {
+                        // the TextEdit resets this every frame, so set ours after it: Tab and
+                        // Up/Down stay in the box (history, completion) instead of moving focus
+                        ui.memory_mut(|m| {
+                            m.set_focus_lock_filter(
+                                r.id,
+                                egui::EventFilter {
+                                    tab: true,
+                                    horizontal_arrows: false,
+                                    vertical_arrows: true,
+                                    escape: false,
+                                },
+                            )
+                        });
+                    }
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        run = Some(std::mem::take(&mut self.console_input));
+                        r.request_focus();
+                    }
+                });
             });
-        self.console_open = open;
         if let Some(line) = run.filter(|l| !l.trim().is_empty()) {
-            self.console_log.push(format!("% {line}"));
+            self.console_log
+                .push((LogKind::Echo, format!("VSIM> {line}")));
+            self.console_hist.push(line.clone());
+            self.hist_pos = None;
             match self.run_script(&line) {
-                Ok(out) if !out.is_empty() => self.console_log.push(out),
+                Ok(out) if !out.is_empty() => out
+                    .lines()
+                    .for_each(|l| self.console_log.push((LogKind::Out, l.to_string()))),
                 Ok(_) => {}
-                Err(e) => self.console_log.push(format!("error: {e}")),
+                Err(e) => e.lines().for_each(|l| {
+                    self.console_log
+                        .push((LogKind::Err, format!("# ** Error: {l}")))
+                }),
+            }
+        }
+    }
+
+    /// Tab: complete the command name being typed; list the choices when ambiguous.
+    fn complete(&mut self) {
+        let word = self.console_input.trim_start().to_string();
+        if word.contains(' ') {
+            return;
+        }
+        let names: Vec<&str> = crate::script::command_names()
+            .filter(|n| n.starts_with(&word))
+            .collect();
+        match names.as_slice() {
+            [] => {}
+            [one] => self.console_input = format!("{one} "),
+            many => {
+                let first = many[0];
+                let common = (0..=first.len())
+                    .rev()
+                    .find(|&n| {
+                        first.is_char_boundary(n) && many.iter().all(|m| m.starts_with(&first[..n]))
+                    })
+                    .unwrap_or(0);
+                self.console_input = first[..common].to_string();
+                self.console_log.push((LogKind::Out, many.join("  ")));
             }
         }
     }
@@ -407,6 +537,11 @@ fn ungroup_actions(selected: &[usize]) -> Vec<Action> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        ui.ctx().set_visuals(if self.canvas.dark {
+            questa_visuals()
+        } else {
+            egui::Visuals::light()
+        });
         // Ctrl+Z inside a text box belongs to that box, not to the diagram
         let typing = ui.ctx().egui_wants_keyboard_input();
         let (undo, redo) = ui.input_mut(|i| {
@@ -471,6 +606,16 @@ impl eframe::App for App {
                         actions.push(Action::GroupSelection);
                         ui.close();
                     }
+                    if ui.button("New empty group").clicked() {
+                        actions.push(Action::NewGroup);
+                        ui.close();
+                    }
+                    if ui.button("Ungroup selection").clicked() {
+                        actions.extend(ungroup_actions(&self.canvas.selected));
+                        ui.close();
+                    }
+                });
+                ui.menu_button("Tools", |ui| {
                     if ui.button("Auto layout").clicked() {
                         actions.push(Action::AutoLayout);
                         ui.close();
@@ -479,6 +624,7 @@ impl eframe::App for App {
                         actions.push(Action::AutoLayoutSelection);
                         ui.close();
                     }
+                    ui.separator();
                     if ui.button("Collapse interfaces").clicked() {
                         actions.push(Action::CollapseInterfaces);
                         ui.close();
@@ -491,19 +637,16 @@ impl eframe::App for App {
                         actions.push(Action::Validate);
                         ui.close();
                     }
-                    if ui.button("New empty group").clicked() {
-                        actions.push(Action::NewGroup);
-                        ui.close();
-                    }
-                    if ui.button("Ungroup selection").clicked() {
-                        actions.extend(ungroup_actions(&self.canvas.selected));
-                        ui.close();
-                    }
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.canvas.show_grid, "Grid");
                     ui.checkbox(&mut self.canvas.show_signal_names, "Signal names");
-                    ui.checkbox(&mut self.console_open, "Tcl console");
+                    ui.separator();
+                    ui.checkbox(&mut self.show_structure, "Structure");
+                    ui.checkbox(&mut self.show_objects, "Objects");
+                    ui.checkbox(&mut self.console_open, "Transcript");
+                    ui.checkbox(&mut self.canvas.dark, "Dark theme");
+                    ui.separator();
                     ui.checkbox(&mut self.canvas.show_unconnected, "Unconnected pins");
                     if ui
                         .checkbox(&mut self.stub_globals, "Clock/reset as stubs")
@@ -524,32 +667,34 @@ impl eframe::App for App {
         if let Some(p) = open {
             self.open_file(&p);
         }
-        if !self.warnings.is_empty() {
-            egui::Panel::bottom("warnings").show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(80.0)
-                    .show(ui, |ui| {
-                        for w in &self.warnings {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(0xB0, 0x60, 0x00),
-                                format!("⚠ {w}"),
-                            );
-                        }
-                    });
-            });
+        self.transcript_ui(ui);
+        if self.show_structure {
+            egui::Panel::left("structure")
+                .default_size(220.0)
+                .show(ui, |ui| {
+                    actions.extend(inspector::structure(
+                        ui,
+                        &self.diagram,
+                        &self.canvas.selected,
+                        &mut self.filter,
+                    ));
+                });
         }
-        egui::Panel::right("inspector")
-            .default_size(260.0)
-            .show(ui, |ui| {
-                actions.extend(inspector::show(
-                    ui,
-                    &self.diagram,
-                    &self.wires,
-                    &self.stubs,
-                    self.canvas.highlight.as_deref(),
-                    &mut self.filter,
-                ));
-            });
+        if self.show_objects {
+            egui::Panel::right("objects")
+                .default_size(240.0)
+                .show(ui, |ui| {
+                    actions.extend(inspector::objects(
+                        ui,
+                        &self.diagram,
+                        &self.canvas.selected,
+                        &self.wires,
+                        &self.stubs,
+                        self.canvas.highlight.as_deref(),
+                        &self.filter,
+                    ));
+                });
+        }
         let mut outcomes = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
             let mut view = View {
@@ -645,7 +790,6 @@ impl eframe::App for App {
                 self.group_dialog = Some(gd);
             }
         }
-        self.console_ui(ui.ctx());
         if let Some(mut p) = self.prompt.take() {
             let (mut ok, mut cancel) = (false, false);
             egui::Window::new(p.title)

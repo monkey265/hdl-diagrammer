@@ -16,14 +16,22 @@ pub const CLOCK: (u8, u8, u8) = (0x8E, 0x24, 0xAA);
 pub const RESET: (u8, u8, u8) = (0x79, 0x55, 0x48);
 pub const BUS: (u8, u8, u8) = (0x15, 0x65, 0xC0);
 
-/// Wire colour and width (px) for a net class.
-pub fn class_style(c: crate::net::NetClass) -> ((u8, u8, u8), f32) {
+/// Wire colour and width (px) for a net class; `dark` picks the brighter set for a black canvas.
+pub fn class_style(c: crate::net::NetClass, dark: bool) -> ((u8, u8, u8), f32) {
     use crate::net::NetClass::*;
-    match c {
+    let (rgb, w) = match c {
         Clock => (CLOCK, 1.5),
         Reset => (RESET, 1.5),
         Bus => (BUS, 2.0),
         Signal => (SIGNAL, 1.5),
         Undeclared => (UNDECLARED, 1.5),
-    }
+    };
+    let bright = match c {
+        Clock => (0xCE, 0x93, 0xD8),
+        Reset => (0xD7, 0xB0, 0x8A),
+        Bus => (0x64, 0xB5, 0xF6),
+        Signal => (0x66, 0xBB, 0x6A),
+        Undeclared => (0x90, 0xA4, 0xAE),
+    };
+    (if dark { bright } else { rgb }, w)
 }

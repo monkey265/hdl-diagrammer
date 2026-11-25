@@ -68,9 +68,6 @@ fn main() -> eframe::Result {
             viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
             ..Default::default()
         },
-        Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(eframe::egui::Visuals::light());
-            Ok(Box::new(app))
-        }),
+        Box::new(move |_cc| Ok(Box::new(app))),
     )
 }
