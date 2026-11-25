@@ -87,6 +87,16 @@ pub fn set_size(d: &mut Diagram, idx: usize, size: Option<(i32, i32)>, grid: i32
     (i.custom_width, i.custom_height) = size.map_or((0, 0), |(w, h)| (up(w), up(h)));
 }
 
+/// Index of the wire whose polyline passes within `tol` world units of the point.
+pub fn hit_wire(wires: &[crate::net::Wire], p: (f32, f32), tol: f32) -> Option<usize> {
+    wires.iter().position(|w| {
+        w.segments.iter().any(|&((x1, y1), (x2, y2))| {
+            let (cx, cy) = (p.0.clamp(x1.min(x2) as f32, x1.max(x2) as f32), p.1.clamp(y1.min(y2) as f32, y1.max(y2) as f32));
+            ((cx - p.0).powi(2) + (cy - p.1).powi(2)).sqrt() <= tol
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +182,14 @@ mod tests {
         assert_eq!((d.instances[0].custom_width, d.instances[0].custom_height), (340, 60));
         set_size(&mut d, 0, None, 20);
         assert_eq!((d.instances[0].custom_width, d.instances[0].custom_height), (0, 0));
+    }
+
+    #[test]
+    fn hit_wire_near_segment() {
+        use crate::net::{Ep, Wire};
+        let w = Wire { signal: "s".into(), src: Ep::Top(0), dst: Ep::Top(1), segments: vec![((0, 0), (100, 0)), ((100, 0), (100, 50))] };
+        assert_eq!(hit_wire(std::slice::from_ref(&w), (50.0, 3.0), 4.0), Some(0));
+        assert_eq!(hit_wire(std::slice::from_ref(&w), (103.0, 30.0), 4.0), Some(0));
+        assert_eq!(hit_wire(std::slice::from_ref(&w), (50.0, 20.0), 4.0), None);
     }
 }

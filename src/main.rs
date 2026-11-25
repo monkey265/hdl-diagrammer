@@ -10,6 +10,7 @@ mod model;
 mod net;
 mod parser;
 mod router;
+mod ui;
 
 fn main() -> eframe::Result {
     let arg = std::env::args().nth(1);
