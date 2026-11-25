@@ -74,6 +74,52 @@ pub fn create_group(d: &mut Diagram, name: &str, members: &[usize], ports: Vec<P
     d.instances.len() - 1
 }
 
+/// Move top-level `members` into the group at `idx` (a group cannot join itself). Returns the
+/// group's new index, or `None` if `idx` is not a group.
+pub fn add_to_group(d: &mut Diagram, idx: usize, members: &[usize]) -> Option<usize> {
+    if !d.instances.get(idx).is_some_and(|i| i.is_group) {
+        return None;
+    }
+    let idxs: BTreeSet<usize> = members
+        .iter()
+        .copied()
+        .filter(|&m| m != idx && m < d.instances.len())
+        .collect();
+    let moved: Vec<Instance> = idxs.iter().map(|&m| d.instances[m].clone()).collect();
+    for &m in idxs.iter().rev() {
+        d.instances.remove(m);
+    }
+    let at = idx - idxs.iter().filter(|&&m| m < idx).count();
+    let g = &mut d.instances[at];
+    g.children.extend(moved);
+    if !g.collapsed {
+        (g.x, g.y, g.width, g.height) = frame_around(&g.children);
+    }
+    Some(at)
+}
+
+/// Take child `child` out of the group at `idx` and put it back at top level.
+pub fn release_child(d: &mut Diagram, idx: usize, child: usize) {
+    let Some(g) = d.instances.get_mut(idx).filter(|i| i.is_group) else {
+        return;
+    };
+    if child >= g.children.len() {
+        return;
+    }
+    let c = g.children.remove(child);
+    if !g.collapsed && !g.children.is_empty() {
+        (g.x, g.y, g.width, g.height) = frame_around(&g.children);
+    }
+    d.instances.push(c);
+}
+
+/// Remove the group at `idx` together with everything inside it.
+pub fn delete_group(d: &mut Diagram, idx: usize) {
+    if d.instances.get(idx).is_some_and(|i| i.is_group) {
+        d.instances.remove(idx);
+    }
+}
+
 /// Empty 200x200 group at (x, y).
 pub fn create_empty_group(d: &mut Diagram, name: &str, x: i32, y: i32) -> usize {
     let mut g = Instance::new(name, "GROUP", vec![]);
@@ -131,6 +177,31 @@ mod tests {
             top_level_pins: vec![Port::new("s2", Direction::Out, "s2")],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn add_release_and_delete_group_members() {
+        let mut d = three();
+        let g = create_group(&mut d, "G", &[1], vec![]); // b into G; a, c, G remain
+        assert_eq!(d.instances.len(), 3);
+        // a (index 0) joins G (index g): G's index shifts down by one
+        let g = add_to_group(&mut d, g, &[0]).unwrap();
+        assert_eq!(d.instances[g].children.len(), 2);
+        assert_eq!(d.instances.len(), 2);
+        assert!(
+            d.instances[g].x <= 0 - 20,
+            "frame grew to cover the new member"
+        );
+        assert_eq!(
+            add_to_group(&mut d, g, &[g]).map(|i| d.instances[i].children.len()),
+            Some(2)
+        );
+        assert!(add_to_group(&mut d, 99, &[0]).is_none());
+        release_child(&mut d, g, 0);
+        assert_eq!((d.instances.len(), d.instances[g].children.len()), (3, 1));
+        delete_group(&mut d, g);
+        assert!(d.instances.iter().all(|i| !i.is_group));
+        assert_eq!(d.instances.len(), 2);
     }
 
     #[test]

@@ -13,6 +13,12 @@ pub enum Action {
     DeletePort(usize, usize),
     Highlight(Option<String>),
     ToggleCollapse(usize),
+    /// Move the selected blocks into this group.
+    AddToGroup(usize),
+    /// (group, child position): take a member out of the group.
+    ReleaseChild(usize, usize),
+    /// Remove the group and everything in it.
+    DeleteGroup(usize),
     Ungroup(usize),
     GroupSelection,
     NewGroup,

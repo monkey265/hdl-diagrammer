@@ -311,8 +311,20 @@ impl Canvas {
                         out.push(Outcome::Do(Action::ToggleCollapse(i)));
                         ui.close();
                     }
+                    let others = self.selected.iter().any(|&k| k != i);
+                    if ui
+                        .add_enabled(others, egui::Button::new("Add selected blocks"))
+                        .clicked()
+                    {
+                        out.push(Outcome::Do(Action::AddToGroup(i)));
+                        ui.close();
+                    }
                     if ui.button("Ungroup").clicked() {
                         out.push(Outcome::Do(Action::Ungroup(i)));
+                        ui.close();
+                    }
+                    if ui.button("Delete group and contents").clicked() {
+                        out.push(Outcome::Do(Action::DeleteGroup(i)));
                         ui.close();
                     }
                 }

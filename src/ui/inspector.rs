@@ -35,6 +35,14 @@ pub fn show(
                         if ui.small_button("go to").clicked() {
                             out.push(Action::Focus(i));
                         }
+                        for (c, child) in inst.children.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("▪ {}", child.name));
+                                if ui.small_button("release").clicked() {
+                                    out.push(Action::ReleaseChild(i, c));
+                                }
+                            });
+                        }
                         for p in &inst.ports {
                             let arrow = match p.direction {
                                 Direction::In => "→",

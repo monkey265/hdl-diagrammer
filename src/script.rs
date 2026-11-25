@@ -290,6 +290,45 @@ const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     }),
     ("size", "inst w h | inst auto", 2, 3, size),
     ("group", "name inst ?inst ...?", 2, usize::MAX, make_group),
+    (
+        "addtogroup",
+        "group inst ?inst ...?",
+        2,
+        usize::MAX,
+        |s, a| {
+            let g = group_idx(s, &a[0])?;
+            let members = a[1..]
+                .iter()
+                .map(|n| find(&s.diagram, n))
+                .collect::<Result<Vec<_>, _>>()?;
+            if members.contains(&g) {
+                return Err("a group cannot contain itself".into());
+            }
+            s.edit(|d, _| {
+                group::add_to_group(d, g, &members);
+                Ok(())
+            })
+        },
+    ),
+    ("release", "group inst", 2, 2, |s, a| {
+        let g = group_idx(s, &a[0])?;
+        let c = s.diagram.instances[g]
+            .children
+            .iter()
+            .position(|c| c.name == a[1])
+            .ok_or_else(|| format!("\"{}\" is not in group \"{}\"", a[1], a[0]))?;
+        s.edit(|d, _| {
+            group::release_child(d, g, c);
+            Ok(())
+        })
+    }),
+    ("deletegroup", "name", 1, 1, |s, a| {
+        let i = group_idx(s, &a[0])?;
+        s.edit(|d, _| {
+            group::delete_group(d, i);
+            Ok(())
+        })
+    }),
     ("ungroup", "name", 1, 1, |s, a| {
         let i = group_idx(s, &a[0])?;
         s.edit(|d, _| {
@@ -516,5 +555,25 @@ mod tests {
         assert!(s.eval("interfaces collapse").is_ok());
         assert!(s.eval("undo").is_ok(), "collapse is one undoable step");
         assert!(s.eval("interfaces bogus").is_err());
+    }
+
+    #[test]
+    fn group_membership_commands() {
+        let mut s = script();
+        let names = s.eval("instances").unwrap();
+        let mut it = names.split_whitespace();
+        let (a, b) = (
+            it.next().unwrap().to_string(),
+            it.next().unwrap().to_string(),
+        );
+        s.eval(&format!("group G {a}")).unwrap();
+        s.eval(&format!("addtogroup G {b}")).unwrap();
+        assert!(s.eval("addtogroup G G").is_err());
+        s.eval(&format!("release G {a}")).unwrap();
+        assert!(s.eval(&format!("release G {a}")).is_err());
+        s.eval("deletegroup G").unwrap();
+        assert!(!s.eval("instances").unwrap().contains(&b));
+        s.eval("undo").unwrap();
+        assert!(s.eval("instances").unwrap().contains('G'));
     }
 }
