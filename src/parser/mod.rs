@@ -16,10 +16,17 @@ pub struct Design {
 
 /// Dispatch on file extension; unknown extensions yield an empty design with a warning.
 pub fn parse_file(path_or_ext: &str, text: &str) -> Design {
-    let ext = path_or_ext.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = path_or_ext
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match ext.as_str() {
         "vhd" | "vhdl" => vhdl::parse_vhdl(text),
         "sv" | "v" | "svh" => sv::parse_sv(text),
-        _ => Design { warnings: vec![format!("unsupported file type '.{ext}'")], ..Default::default() },
+        _ => Design {
+            warnings: vec![format!("unsupported file type '.{ext}'")],
+            ..Default::default()
+        },
     }
 }

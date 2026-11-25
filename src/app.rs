@@ -5,10 +5,10 @@ use crate::geometry::Pt;
 use crate::group;
 use crate::history::History;
 use crate::model::{Diagram, Direction, Port};
-use crate::net::{design_to_diagram, route_all, top_pin_positions, wire_junctions, Wire};
+use crate::net::{Wire, design_to_diagram, route_all, top_pin_positions, wire_junctions};
 use crate::parser::parse_file;
 use crate::recent;
-use crate::ui::{inspector, Action};
+use crate::ui::{Action, inspector};
 use eframe::egui;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -102,7 +102,13 @@ impl App {
     }
 
     fn save_as(&mut self) {
-        let Some(p) = rfd::FileDialog::new().add_filter("Diagram", &["json"]).set_file_name("diagram.json").save_file() else { return };
+        let Some(p) = rfd::FileDialog::new()
+            .add_filter("Diagram", &["json"])
+            .set_file_name("diagram.json")
+            .save_file()
+        else {
+            return;
+        };
         if let Err(e) = std::fs::write(&p, self.diagram.to_json()) {
             self.warnings = vec![format!("cannot save {}: {e}", p.display())];
         }
@@ -142,16 +148,32 @@ impl App {
         match a {
             Action::RenameInstance(i) => {
                 let text = self.diagram.instances[i].name.clone();
-                self.prompt = Some(Prompt { kind: PromptKind::RenameInstance(i), title: "Rename instance", text });
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::RenameInstance(i),
+                    title: "Rename instance",
+                    text,
+                });
             }
             Action::RenamePort(i, p) => {
                 let text = self.diagram.instances[i].ports[p].name.clone();
-                self.prompt = Some(Prompt { kind: PromptKind::RenamePort(i, p), title: "Rename port", text });
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::RenamePort(i, p),
+                    title: "Rename port",
+                    text,
+                });
             }
             Action::SetSize(i) => {
                 let n = &self.diagram.instances[i];
-                let text = if n.custom_width > 0 { format!("{}x{}", n.custom_width, n.custom_height) } else { String::new() };
-                self.prompt = Some(Prompt { kind: PromptKind::SetSize(i), title: "Size WxH (empty = auto)", text });
+                let text = if n.custom_width > 0 {
+                    format!("{}x{}", n.custom_width, n.custom_height)
+                } else {
+                    String::new()
+                };
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::SetSize(i),
+                    title: "Size WxH (empty = auto)",
+                    text,
+                });
             }
             Action::Color(i, c) => self.edit(|d| d.instances[i].color_override = c),
             Action::ToggleLock(i) => self.edit(|d| edit::toggle_lock(d, i)),
@@ -168,16 +190,26 @@ impl App {
             Action::NewGroup => {
                 let (x, y) = self.canvas.view_center;
                 let name = group::unique_group_name(&self.diagram);
-                self.edit(|d| drop(group::create_empty_group(d, &name, x - 100, y - 100)));
+                self.edit(|d| {
+                    group::create_empty_group(d, &name, x - 100, y - 100);
+                });
             }
             Action::GroupSelection => {
                 if self.canvas.selected.is_empty() {
-                    self.warnings = vec!["select one or more blocks first (click, shift-click)".into()];
+                    self.warnings =
+                        vec!["select one or more blocks first (click, shift-click)".into()];
                 } else {
                     let sel = &self.canvas.selected;
                     self.group_dialog = Some(GroupDialog {
                         name: group::unique_group_name(&self.diagram),
-                        members: self.diagram.instances.iter().enumerate().filter(|(_, i)| i.visible).map(|(k, _)| (k, sel.contains(&k))).collect(),
+                        members: self
+                            .diagram
+                            .instances
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, i)| i.visible)
+                            .map(|(k, _)| (k, sel.contains(&k)))
+                            .collect(),
                         ports: group::suggest_ports(&self.diagram, sel),
                     });
                 }
@@ -189,10 +221,16 @@ impl App {
         let g = self.grid;
         let t = p.text.trim().to_string();
         match p.kind {
-            PromptKind::RenameInstance(i) if !t.is_empty() => self.edit(|d| d.instances[i].name = t),
-            PromptKind::RenamePort(i, k) if !t.is_empty() => self.edit(|d| d.instances[i].ports[k].name = t),
+            PromptKind::RenameInstance(i) if !t.is_empty() => {
+                self.edit(|d| d.instances[i].name = t)
+            }
+            PromptKind::RenamePort(i, k) if !t.is_empty() => {
+                self.edit(|d| d.instances[i].ports[k].name = t)
+            }
             PromptKind::SetSize(i) => {
-                let size = t.split_once(['x', 'X']).and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
+                let size = t
+                    .split_once(['x', 'X'])
+                    .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
                 if t.is_empty() || size.is_some() {
                     self.edit(|d| edit::set_size(d, i, size, g));
                 } else {
@@ -208,7 +246,10 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let (undo, redo) = ui.input_mut(|i| {
             let redo = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
-                || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+                || i.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                );
             (i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z), redo)
         });
         if undo {
@@ -225,7 +266,10 @@ impl eframe::App for App {
                     if ui.button("Open…").clicked() {
                         ui.close();
                         open = rfd::FileDialog::new()
-                            .add_filter("HDL or diagram", &["vhd", "vhdl", "sv", "v", "svh", "json"])
+                            .add_filter(
+                                "HDL or diagram",
+                                &["vhd", "vhdl", "sv", "v", "svh", "json"],
+                            )
                             .pick_file();
                     }
                     ui.menu_button("Open Recent", |ui| {
@@ -260,7 +304,13 @@ impl eframe::App for App {
                         ui.close();
                     }
                     if ui.button("Ungroup selection").clicked() {
-                        actions.extend(self.canvas.selected.iter().rev().map(|&i| Action::Ungroup(i)));
+                        actions.extend(
+                            self.canvas
+                                .selected
+                                .iter()
+                                .rev()
+                                .map(|&i| Action::Ungroup(i)),
+                        );
                         ui.close();
                     }
                 });
@@ -282,16 +332,28 @@ impl eframe::App for App {
         }
         if !self.warnings.is_empty() {
             egui::Panel::bottom("warnings").show(ui, |ui| {
-                egui::ScrollArea::vertical().max_height(80.0).show(ui, |ui| {
-                    for w in &self.warnings {
-                        ui.colored_label(egui::Color32::from_rgb(0xB0, 0x60, 0x00), format!("⚠ {w}"));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(80.0)
+                    .show(ui, |ui| {
+                        for w in &self.warnings {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(0xB0, 0x60, 0x00),
+                                format!("⚠ {w}"),
+                            );
+                        }
+                    });
             });
         }
-        egui::Panel::right("inspector").default_size(260.0).show(ui, |ui| {
-            actions.extend(inspector::show(ui, &self.diagram, &self.wires, self.canvas.highlight.as_deref()));
-        });
+        egui::Panel::right("inspector")
+            .default_size(260.0)
+            .show(ui, |ui| {
+                actions.extend(inspector::show(
+                    ui,
+                    &self.diagram,
+                    &self.wires,
+                    self.canvas.highlight.as_deref(),
+                ));
+            });
         let mut outcomes = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
             let mut view = View {
@@ -318,50 +380,67 @@ impl eframe::App for App {
         }
         if let Some(mut gd) = self.group_dialog.take() {
             let (mut ok, mut cancel) = (false, false);
-            egui::Window::new("Create group").collapsible(false).show(ui.ctx(), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    ui.text_edit_singleline(&mut gd.name);
-                });
-                ui.separator();
-                ui.label("Blocks");
-                egui::ScrollArea::vertical().id_salt("gd_blocks").max_height(140.0).show(ui, |ui| {
-                    for (k, on) in gd.members.iter_mut() {
-                        ui.checkbox(on, &self.diagram.instances[*k].name);
-                    }
-                });
-                ui.separator();
-                ui.label("Ports");
-                let mut remove = None;
-                for (k, p) in gd.ports.iter_mut().enumerate() {
+            egui::Window::new("Create group")
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(90.0));
-                        egui::ComboBox::from_id_salt(("gd_dir", k)).selected_text(format!("{:?}", p.direction)).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut p.direction, Direction::In, "In");
-                            ui.selectable_value(&mut p.direction, Direction::Out, "Out");
-                            ui.selectable_value(&mut p.direction, Direction::InOut, "InOut");
-                        });
-                        ui.add(egui::TextEdit::singleline(&mut p.signal).desired_width(90.0));
-                        if ui.small_button("✕").clicked() {
-                            remove = Some(k);
-                        }
+                        ui.label("Name");
+                        ui.text_edit_singleline(&mut gd.name);
                     });
-                }
-                if let Some(k) = remove {
-                    gd.ports.remove(k);
-                }
-                if ui.button("Add port").clicked() {
-                    gd.ports.push(Port::new("port", Direction::InOut, ""));
-                }
-                ui.horizontal(|ui| {
-                    ok = ui.button("OK").clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    ui.separator();
+                    ui.label("Blocks");
+                    egui::ScrollArea::vertical()
+                        .id_salt("gd_blocks")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for (k, on) in gd.members.iter_mut() {
+                                ui.checkbox(on, &self.diagram.instances[*k].name);
+                            }
+                        });
+                    ui.separator();
+                    ui.label("Ports");
+                    let mut remove = None;
+                    for (k, p) in gd.ports.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(90.0));
+                            egui::ComboBox::from_id_salt(("gd_dir", k))
+                                .selected_text(format!("{:?}", p.direction))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut p.direction, Direction::In, "In");
+                                    ui.selectable_value(&mut p.direction, Direction::Out, "Out");
+                                    ui.selectable_value(
+                                        &mut p.direction,
+                                        Direction::InOut,
+                                        "InOut",
+                                    );
+                                });
+                            ui.add(egui::TextEdit::singleline(&mut p.signal).desired_width(90.0));
+                            if ui.small_button("✕").clicked() {
+                                remove = Some(k);
+                            }
+                        });
+                    }
+                    if let Some(k) = remove {
+                        gd.ports.remove(k);
+                    }
+                    if ui.button("Add port").clicked() {
+                        gd.ports.push(Port::new("port", Direction::InOut, ""));
+                    }
+                    ui.horizontal(|ui| {
+                        ok = ui.button("OK").clicked();
+                        cancel = ui.button("Cancel").clicked();
+                    });
                 });
-            });
             if ok {
                 let members: Vec<usize> = gd.members.iter().filter(|m| m.1).map(|m| m.0).collect();
-                let name = if gd.name.trim().is_empty() { group::unique_group_name(&self.diagram) } else { gd.name.trim().to_string() };
-                self.edit(|d| drop(group::create_group(d, &name, &members, gd.ports)));
+                let name = if gd.name.trim().is_empty() {
+                    group::unique_group_name(&self.diagram)
+                } else {
+                    gd.name.trim().to_string()
+                };
+                self.edit(|d| {
+                    group::create_group(d, &name, &members, gd.ports);
+                });
                 self.canvas.selected.clear();
             } else if !cancel {
                 self.group_dialog = Some(gd);
@@ -369,14 +448,18 @@ impl eframe::App for App {
         }
         if let Some(mut p) = self.prompt.take() {
             let (mut ok, mut cancel) = (false, false);
-            egui::Window::new(p.title).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
-                let r = ui.text_edit_singleline(&mut p.text);
-                r.request_focus();
-                ui.horizontal(|ui| {
-                    ok = ui.button("OK").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                    cancel = ui.button("Cancel").clicked();
+            egui::Window::new(p.title)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    let r = ui.text_edit_singleline(&mut p.text);
+                    r.request_focus();
+                    ui.horizontal(|ui| {
+                        ok = ui.button("OK").clicked()
+                            || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        cancel = ui.button("Cancel").clicked();
+                    });
                 });
-            });
             if ok {
                 self.finish_prompt(p);
             } else if !cancel {

@@ -1,5 +1,5 @@
-use super::lex::{balanced_parens, split_top_level, strip_comments_vhdl};
 use super::Design;
+use super::lex::{balanced_parens, split_top_level, strip_comments_vhdl};
 use crate::model::{Direction, Instance, Port};
 use regex::Regex;
 use std::collections::HashMap;
@@ -16,7 +16,9 @@ pub(super) fn guess_direction(port: &str) -> Direction {
     let has = |set: &[&str]| toks.iter().any(|t| set.contains(t));
     if has(&["o", "out", "dout", "result", "do", "q"]) {
         Direction::Out
-    } else if has(&["i", "in", "din", "di", "clk", "clock", "rst", "rstn", "aresetn", "reset"]) {
+    } else if has(&[
+        "i", "in", "din", "di", "clk", "clock", "rst", "rstn", "aresetn", "reset",
+    ]) {
         Direction::In
     } else {
         Direction::InOut
@@ -26,8 +28,14 @@ pub(super) fn guess_direction(port: &str) -> Direction {
 fn parse_ports(body: &str) -> Vec<Port> {
     let mut out = Vec::new();
     for decl in split_top_level(body, ';') {
-        let Some((names, rest)) = decl.split_once(':') else { continue };
-        let first = rest.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        let Some((names, rest)) = decl.split_once(':') else {
+            continue;
+        };
+        let first = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let dir = match first.as_str() {
             "in" => Direction::In,
             "out" | "buffer" => Direction::Out,
@@ -59,7 +67,9 @@ pub fn parse_vhdl(text: &str) -> Design {
         let ports = match port_re.find(rest) {
             Some(p) if p.start() < end_at => {
                 let open = after + p.end() - 1;
-                balanced_parens(&src, open).map(parse_ports).unwrap_or_default()
+                balanced_parens(&src, open)
+                    .map(parse_ports)
+                    .unwrap_or_default()
             }
             _ => Vec::new(),
         };
@@ -68,10 +78,13 @@ pub fn parse_vhdl(text: &str) -> Design {
     if entities.is_empty() {
         d.warnings.push("no entity found".into());
     }
-    let ent_ports: HashMap<String, &Vec<Port>> =
-        entities.iter().map(|(n, p)| (n.to_ascii_lowercase(), p)).collect();
+    let ent_ports: HashMap<String, &Vec<Port>> = entities
+        .iter()
+        .map(|(n, p)| (n.to_ascii_lowercase(), p))
+        .collect();
 
-    let sig_re = Regex::new(r"(?is)\bsignal\s+(\w+(?:\s*,\s*\w+)*)\s*:\s*([^;:=]+?)(?::=.*?)?;").unwrap();
+    let sig_re =
+        Regex::new(r"(?is)\bsignal\s+(\w+(?:\s*,\s*\w+)*)\s*:\s*([^;:=]+?)(?::=.*?)?;").unwrap();
     for m in sig_re.captures_iter(&src) {
         for n in m[1].split(',') {
             d.signals.insert(n.trim().to_string(), squash(&m[2]));
@@ -80,17 +93,24 @@ pub fn parse_vhdl(text: &str) -> Design {
 
     // Instances: anchor on `port map (`, look back to the previous `;` for the header.
     let pm_re = Regex::new(r"(?i)\bport\s+map\s*\(").unwrap();
-    let head_re = Regex::new(r"(?is)(\w+)\s*:\s*(?:entity\s+|component\s+|configuration\s+)?([\w.]+)").unwrap();
+    let head_re =
+        Regex::new(r"(?is)(\w+)\s*:\s*(?:entity\s+|component\s+|configuration\s+)?([\w.]+)")
+            .unwrap();
     for m in pm_re.find_iter(&src) {
         let start = src[..m.start()].rfind(';').map_or(0, |i| i + 1);
         let header = &src[start..m.start()];
         let Some(h) = head_re.captures(header) else {
-            d.warnings.push("port map without a recognisable instance label skipped".into());
+            d.warnings
+                .push("port map without a recognisable instance label skipped".into());
             continue;
         };
-        let (label, ent) = (h[1].to_string(), h[2].rsplit('.').next().unwrap_or("").to_string());
+        let (label, ent) = (
+            h[1].to_string(),
+            h[2].rsplit('.').next().unwrap_or("").to_string(),
+        );
         let Some(body) = balanced_parens(&src, m.end() - 1) else {
-            d.warnings.push(format!("unbalanced port map in instance {label}"));
+            d.warnings
+                .push(format!("unbalanced port map in instance {label}"));
             continue;
         };
         let known = ent_ports.get(&ent.to_ascii_lowercase());
@@ -111,7 +131,9 @@ pub fn parse_vhdl(text: &str) -> Design {
             ports.push(Port::new(formal, dir, &squash(actual)));
         }
         if positional {
-            d.warnings.push(format!("positional associations in instance {label} skipped"));
+            d.warnings.push(format!(
+                "positional associations in instance {label} skipped"
+            ));
         }
         d.instances.push(Instance::new(&label, &ent, ports));
     }
@@ -144,8 +166,21 @@ end architecture;";
     fn parses_entity_ports() {
         let d = parse_vhdl(SAMPLE);
         assert_eq!(d.top_name, "top");
-        let got: Vec<_> = d.top_ports.iter().map(|p| (p.name.as_str(), p.direction)).collect();
-        assert_eq!(got, vec![("clk", Direction::In), ("a", Direction::In), ("b", Direction::In), ("q", Direction::Out), ("io", Direction::InOut)]);
+        let got: Vec<_> = d
+            .top_ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.direction))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("clk", Direction::In),
+                ("a", Direction::In),
+                ("b", Direction::In),
+                ("q", Direction::Out),
+                ("io", Direction::InOut)
+            ]
+        );
         assert!(d.signals.contains_key("s1") && d.signals.contains_key("s2"));
     }
 
@@ -171,7 +206,9 @@ end architecture;";
 
     #[test]
     fn mixed_case_keywords() {
-        let d = parse_vhdl("ENTITY T Is Port (a : IN std_logic); End T;\nBegin\n u : Entity WORK.m Port Map (p => a);");
+        let d = parse_vhdl(
+            "ENTITY T Is Port (a : IN std_logic); End T;\nBegin\n u : Entity WORK.m Port Map (p => a);",
+        );
         assert_eq!(d.instances.len(), 1);
         assert_eq!(d.instances[0].entity, "m");
     }
@@ -186,7 +223,9 @@ end architecture;";
 
     #[test]
     fn direction_from_entity_in_same_file() {
-        let d = parse_vhdl("entity sub is port (x : in bit; y : out bit); end sub;\nentity top is port (a : in bit); end top;\narchitecture r of top is begin u : entity work.sub port map (x => a, y => w); end;");
+        let d = parse_vhdl(
+            "entity sub is port (x : in bit; y : out bit); end sub;\nentity top is port (a : in bit); end top;\narchitecture r of top is begin u : entity work.sub port map (x => a, y => w); end;",
+        );
         assert_eq!(d.top_name, "top");
         assert_eq!(d.instances[0].ports[1].direction, Direction::Out);
     }

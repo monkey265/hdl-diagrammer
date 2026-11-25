@@ -21,20 +21,34 @@ fn overlaps(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
 
 /// If block `idx` overlaps another visible block, move it to the nearest free grid spot.
 pub fn resolve_collision(d: &mut Diagram, idx: usize, grid: i32) {
-    let Some(me) = d.instances.get(idx) else { return };
-    let others: Vec<_> = d.instances.iter().enumerate()
+    let Some(me) = d.instances.get(idx) else {
+        return;
+    };
+    let others: Vec<_> = d
+        .instances
+        .iter()
+        .enumerate()
         .filter(|(k, i)| *k != idx && i.visible)
         .map(|(_, i)| (i.x, i.y, i.width, i.height))
         .collect();
-    let free = |x: i32, y: i32| !others.iter().any(|&o| overlaps((x, y, me.width, me.height), o));
+    let free = |x: i32, y: i32| {
+        !others
+            .iter()
+            .any(|&o| overlaps((x, y, me.width, me.height), o))
+    };
     if free(me.x, me.y) {
         return;
     }
     const R: i32 = 30; // search radius in grid cells
-    let mut ring: Vec<(i32, i32)> = (-R..=R).flat_map(|dx| (-R..=R).map(move |dy| (dx, dy))).collect();
+    let mut ring: Vec<(i32, i32)> = (-R..=R)
+        .flat_map(|dx| (-R..=R).map(move |dy| (dx, dy)))
+        .collect();
     ring.sort_by_key(|(dx, dy)| dx * dx + dy * dy);
     let (x0, y0) = (me.x, me.y);
-    if let Some((dx, dy)) = ring.into_iter().find(|&(dx, dy)| free(x0 + dx * grid, y0 + dy * grid)) {
+    if let Some((dx, dy)) = ring
+        .into_iter()
+        .find(|&(dx, dy)| free(x0 + dx * grid, y0 + dy * grid))
+    {
         let m = &mut d.instances[idx];
         (m.x, m.y) = (x0 + dx * grid, y0 + dy * grid);
     }
@@ -42,9 +56,18 @@ pub fn resolve_collision(d: &mut Diagram, idx: usize, grid: i32) {
 
 /// Topmost (last drawn) visible block containing the world point.
 pub fn hit_block(d: &Diagram, p: (f32, f32)) -> Option<usize> {
-    d.instances.iter().enumerate().rev().find(|(_, i)| {
-        i.visible && p.0 >= i.x as f32 && p.0 <= (i.x + i.width) as f32 && p.1 >= i.y as f32 && p.1 <= (i.y + i.height) as f32
-    }).map(|(k, _)| k)
+    d.instances
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, i)| {
+            i.visible
+                && p.0 >= i.x as f32
+                && p.0 <= (i.x + i.width) as f32
+                && p.1 >= i.y as f32
+                && p.1 <= (i.y + i.height) as f32
+        })
+        .map(|(k, _)| k)
 }
 
 /// Nearest port of a visible block within `radius` of the world point.
@@ -88,7 +111,9 @@ pub fn reset_ports(d: &mut Diagram, idx: usize) {
 
 /// Set a custom size (grid-snapped upward, at least 50x50); `None` clears it back to auto-size.
 pub fn set_size(d: &mut Diagram, idx: usize, size: Option<(i32, i32)>, grid: i32) {
-    let Some(i) = d.instances.get_mut(idx) else { return };
+    let Some(i) = d.instances.get_mut(idx) else {
+        return;
+    };
     let up = |v: i32| (v.max(50) + grid - 1).div_euclid(grid) * grid;
     (i.custom_width, i.custom_height) = size.map_or((0, 0), |(w, h)| (up(w), up(h)));
 }
@@ -97,7 +122,10 @@ pub fn set_size(d: &mut Diagram, idx: usize, size: Option<(i32, i32)>, grid: i32
 pub fn hit_wire(wires: &[crate::net::Wire], p: (f32, f32), tol: f32) -> Option<usize> {
     wires.iter().position(|w| {
         w.segments.iter().any(|&((x1, y1), (x2, y2))| {
-            let (cx, cy) = (p.0.clamp(x1.min(x2) as f32, x1.max(x2) as f32), p.1.clamp(y1.min(y2) as f32, y1.max(y2) as f32));
+            let (cx, cy) = (
+                p.0.clamp(x1.min(x2) as f32, x1.max(x2) as f32),
+                p.1.clamp(y1.min(y2) as f32, y1.max(y2) as f32),
+            );
             ((cx - p.0).powi(2) + (cy - p.1).powi(2)).sqrt() <= tol
         })
     })
@@ -109,11 +137,23 @@ mod tests {
     use crate::model::{Direction, Instance, Port};
 
     fn blk(x: i32, y: i32) -> Instance {
-        let mut i = Instance::new("u", "E", vec![Port::new("a", Direction::In, "s"), Port::new("b", Direction::Out, "s")]);
+        let mut i = Instance::new(
+            "u",
+            "E",
+            vec![
+                Port::new("a", Direction::In, "s"),
+                Port::new("b", Direction::Out, "s"),
+            ],
+        );
         (i.x, i.y, i.width, i.height) = (x, y, 100, 100);
         i
     }
-    fn dia(v: Vec<Instance>) -> Diagram { Diagram { instances: v, top_level_pins: vec![] } }
+    fn dia(v: Vec<Instance>) -> Diagram {
+        Diagram {
+            instances: v,
+            top_level_pins: vec![],
+        }
+    }
 
     #[test]
     fn drag_snaps_to_grid() {
@@ -139,7 +179,10 @@ mod tests {
         resolve_collision(&mut d, 1, 20);
         let (a, b) = (&d.instances[0], &d.instances[1]);
         assert!((b.x, b.y) != (100, 100));
-        let apart = b.x >= a.x + a.width || b.x + b.width <= a.x || b.y >= a.y + a.height || b.y + b.height <= a.y;
+        let apart = b.x >= a.x + a.width
+            || b.x + b.width <= a.x
+            || b.y >= a.y + a.height
+            || b.y + b.height <= a.y;
         assert!(apart);
         assert!((b.x - 100).abs() <= 160 && (b.y - 100).abs() <= 160);
         assert_eq!((a.x, a.y), (100, 100)); // the other block never moves
@@ -166,7 +209,10 @@ mod tests {
     fn hit_port_finds_pin_within_radius() {
         let d = dia(vec![blk(0, 0)]);
         let (px, py) = port_pos(&d.instances[0], 1);
-        assert_eq!(hit_port(&d, (px as f32 + 2.0, py as f32), 6.0), Some((0, 1)));
+        assert_eq!(
+            hit_port(&d, (px as f32 + 2.0, py as f32), 6.0),
+            Some((0, 1))
+        );
         assert_eq!(hit_port(&d, (px as f32 + 40.0, py as f32), 6.0), None);
     }
 
@@ -185,17 +231,34 @@ mod tests {
     fn set_size_snaps_and_clamps() {
         let mut d = dia(vec![blk(0, 0)]);
         set_size(&mut d, 0, Some((333, 10)), 20);
-        assert_eq!((d.instances[0].custom_width, d.instances[0].custom_height), (340, 60));
+        assert_eq!(
+            (d.instances[0].custom_width, d.instances[0].custom_height),
+            (340, 60)
+        );
         set_size(&mut d, 0, None, 20);
-        assert_eq!((d.instances[0].custom_width, d.instances[0].custom_height), (0, 0));
+        assert_eq!(
+            (d.instances[0].custom_width, d.instances[0].custom_height),
+            (0, 0)
+        );
     }
 
     #[test]
     fn hit_wire_near_segment() {
         use crate::net::{Ep, Wire};
-        let w = Wire { signal: "s".into(), src: Ep::Top(0), dst: Ep::Top(1), segments: vec![((0, 0), (100, 0)), ((100, 0), (100, 50))] };
-        assert_eq!(hit_wire(std::slice::from_ref(&w), (50.0, 3.0), 4.0), Some(0));
-        assert_eq!(hit_wire(std::slice::from_ref(&w), (103.0, 30.0), 4.0), Some(0));
+        let w = Wire {
+            signal: "s".into(),
+            src: Ep::Top(0),
+            dst: Ep::Top(1),
+            segments: vec![((0, 0), (100, 0)), ((100, 0), (100, 50))],
+        };
+        assert_eq!(
+            hit_wire(std::slice::from_ref(&w), (50.0, 3.0), 4.0),
+            Some(0)
+        );
+        assert_eq!(
+            hit_wire(std::slice::from_ref(&w), (103.0, 30.0), 4.0),
+            Some(0)
+        );
         assert_eq!(hit_wire(std::slice::from_ref(&w), (50.0, 20.0), 4.0), None);
     }
 
@@ -206,6 +269,9 @@ mod tests {
         let (cx, cy) = (d.instances[g].children[1].x, d.instances[g].children[1].y);
         let (gx, gy) = (d.instances[g].x, d.instances[g].y);
         move_block(&mut d, g, gx + 100, gy + 60, 20);
-        assert_eq!((d.instances[g].children[1].x, d.instances[g].children[1].y), (cx + 100, cy + 60));
+        assert_eq!(
+            (d.instances[g].children[1].x, d.instances[g].children[1].y),
+            (cx + 100, cy + 60)
+        );
     }
 }

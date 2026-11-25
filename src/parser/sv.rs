@@ -1,24 +1,83 @@
+use super::Design;
 use super::lex::{balanced_parens, split_top_level, strip_comments_sv};
 use super::vhdl::{guess_direction, squash};
-use super::Design;
 use crate::model::{Direction, Instance, Port};
 use regex::Regex;
 use std::collections::HashMap;
 
 /// Words that can start a statement but are never a module type name.
 const KEYWORDS: &[&str] = &[
-    "assign", "always", "always_comb", "always_ff", "always_latch", "initial", "final", "if", "else", "for",
-    "foreach", "while", "repeat", "case", "casez", "casex", "endcase", "begin", "end", "generate", "endgenerate",
-    "function", "endfunction", "task", "endtask", "genvar", "localparam", "parameter", "typedef", "import",
-    "export", "wire", "logic", "reg", "input", "output", "inout", "integer", "int", "bit", "byte", "real", "time",
-    "assert", "assume", "cover", "property", "sequence", "class", "interface", "endinterface", "modport",
-    "package", "endpackage", "return", "defparam", "module", "endmodule", "var", "struct", "enum", "union",
+    "assign",
+    "always",
+    "always_comb",
+    "always_ff",
+    "always_latch",
+    "initial",
+    "final",
+    "if",
+    "else",
+    "for",
+    "foreach",
+    "while",
+    "repeat",
+    "case",
+    "casez",
+    "casex",
+    "endcase",
+    "begin",
+    "end",
+    "generate",
+    "endgenerate",
+    "function",
+    "endfunction",
+    "task",
+    "endtask",
+    "genvar",
+    "localparam",
+    "parameter",
+    "typedef",
+    "import",
+    "export",
+    "wire",
+    "logic",
+    "reg",
+    "input",
+    "output",
+    "inout",
+    "integer",
+    "int",
+    "bit",
+    "byte",
+    "real",
+    "time",
+    "assert",
+    "assume",
+    "cover",
+    "property",
+    "sequence",
+    "class",
+    "interface",
+    "endinterface",
+    "modport",
+    "package",
+    "endpackage",
+    "return",
+    "defparam",
+    "module",
+    "endmodule",
+    "var",
+    "struct",
+    "enum",
+    "union",
 ];
-const PRIMITIVES: &[&str] = &["and", "nand", "or", "nor", "xor", "xnor", "not", "buf", "bufif0", "bufif1", "notif0", "notif1"];
+const PRIMITIVES: &[&str] = &[
+    "and", "nand", "or", "nor", "xor", "xnor", "not", "buf", "bufif0", "bufif1", "notif0", "notif1",
+];
 /// Words stripped from a port/signal declaration to leave the bare name.
 const DECL_WORDS: &[&str] = &[
-    "input", "output", "inout", "ref", "wire", "logic", "reg", "var", "signed", "unsigned", "bit", "tri", "uwire",
-    "supply0", "supply1", "integer", "int", "byte", "shortint", "longint", "real", "time",
+    "input", "output", "inout", "ref", "wire", "logic", "reg", "var", "signed", "unsigned", "bit",
+    "tri", "uwire", "supply0", "supply1", "integer", "int", "byte", "shortint", "longint", "real",
+    "time",
 ];
 
 struct Raw {
@@ -37,7 +96,9 @@ struct Module {
 }
 
 fn is_ident(s: &str) -> bool {
-    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    s.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
 }
 
 fn tokens(src: &str) -> Vec<(usize, usize)> {
@@ -47,9 +108,15 @@ fn tokens(src: &str) -> Vec<(usize, usize)> {
 
 /// Bare declared name in one comma-separated declaration entry (ranges, defaults, type words removed).
 fn last_ident(entry: &str) -> Option<String> {
-    let no_range = Regex::new(r"\[[^\]]*\]").unwrap().replace_all(entry, " ").into_owned();
+    let no_range = Regex::new(r"\[[^\]]*\]")
+        .unwrap()
+        .replace_all(entry, " ")
+        .into_owned();
     let before_eq = no_range.split('=').next().unwrap_or("");
-    before_eq.split_whitespace().filter(|w| !DECL_WORDS.contains(w) && is_ident(w)).last().map(str::to_string)
+    before_eq
+        .split_whitespace()
+        .rfind(|w| !DECL_WORDS.contains(w) && is_ident(w))
+        .map(str::to_string)
 }
 
 fn dir_of(word: &str) -> Direction {
@@ -77,7 +144,15 @@ fn parse_header(h: &str, warnings: &mut Vec<String>) -> (Vec<Port>, bool) {
             continue;
         }
         if let Some(n) = last_ident(e) {
-            ports.push(Port::new(&n, if ansi { cur.unwrap_or(Direction::InOut) } else { Direction::InOut }, &n));
+            ports.push(Port::new(
+                &n,
+                if ansi {
+                    cur.unwrap_or(Direction::InOut)
+                } else {
+                    Direction::InOut
+                },
+                &n,
+            ));
         }
     }
     (ports, ansi)
@@ -99,7 +174,13 @@ fn paren<'a>(src: &'a str, tk: &[(usize, usize)], i: usize) -> (Option<&'a str>,
 }
 
 fn parse_body(src: &str, tk: &[(usize, usize)], (bs, be): (usize, usize), m: &mut Module) {
-    let txt = |i: usize| -> &str { if i < tk.len() { &src[tk[i].0..tk[i].1] } else { "" } };
+    let txt = |i: usize| -> &str {
+        if i < tk.len() {
+            &src[tk[i].0..tk[i].1]
+        } else {
+            ""
+        }
+    };
     let (mut in_gen, mut cond) = (0usize, Vec::<bool>::new());
     let mut k = bs;
     while k < be {
@@ -152,13 +233,18 @@ fn parse_body(src: &str, tk: &[(usize, usize)], (bs, be): (usize, usize), m: &mu
             let (inner, nq) = paren(src, tk, q);
             let Some(inner) = inner else { break };
             if in_gen > 0 || cond.iter().any(|&c| c) {
-                let msg = format!("instance {label} is inside a generate/conditional block; listed once, not expanded");
+                let msg = format!(
+                    "instance {label} is inside a generate/conditional block; listed once, not expanded"
+                );
                 m.warnings.push(msg);
             }
             m.raws.push(Raw {
                 label: label.to_string(),
                 module: w.to_string(),
-                conns: split_top_level(inner, ',').into_iter().map(str::to_string).collect(),
+                conns: split_top_level(inner, ',')
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
             });
             found = true;
             p = nq;
@@ -174,11 +260,18 @@ fn parse_body(src: &str, tk: &[(usize, usize)], (bs, be): (usize, usize), m: &mu
 
 fn parse_modules(src: &str) -> Vec<Module> {
     let tk = tokens(src);
-    let txt = |i: usize| -> &str { if i < tk.len() { &src[tk[i].0..tk[i].1] } else { "" } };
+    let txt = |i: usize| -> &str {
+        if i < tk.len() {
+            &src[tk[i].0..tk[i].1]
+        } else {
+            ""
+        }
+    };
     let (dir_decl, sig_decl) = (
         Regex::new(r"(?s)\b(input|output|inout)\b([^;]*);").unwrap(),
         Regex::new(r"(?s)\b(wire|logic|reg)\b([^;]*);").unwrap(),
     );
+    let range_re = Regex::new(r"\[[^\]]*\]").unwrap();
     let mut mods = Vec::new();
     let mut i = 0;
     while i < tk.len() {
@@ -193,7 +286,10 @@ fn parse_modules(src: &str) -> Vec<Module> {
         if i >= tk.len() {
             break;
         }
-        let mut m = Module { name: txt(i).to_string(), ..Default::default() };
+        let mut m = Module {
+            name: txt(i).to_string(),
+            ..Default::default()
+        };
         i += 1;
         if txt(i) == "#" && txt(i + 1) == "(" {
             i = paren(src, &tk, i + 1).1;
@@ -203,7 +299,9 @@ fn parse_modules(src: &str) -> Vec<Module> {
             let (inner, ni) = paren(src, &tk, i);
             match inner {
                 Some(h) => (m.ports, ansi) = parse_header(h, &mut m.warnings),
-                None => m.warnings.push(format!("module {}: unbalanced port list", m.name)),
+                None => m
+                    .warnings
+                    .push(format!("module {}: unbalanced port list", m.name)),
             }
             i = ni;
         }
@@ -216,22 +314,30 @@ fn parse_modules(src: &str) -> Vec<Module> {
             be += 1;
         }
         if be >= tk.len() && !m.warnings.iter().any(|w| w.contains("unbalanced")) {
-            m.warnings.push(format!("module {}: missing endmodule", m.name));
+            m.warnings
+                .push(format!("module {}: missing endmodule", m.name));
         }
-        let body = if bs < be { &src[tk[bs].0..tk[be.min(tk.len() - 1)].0] } else { "" };
+        let body = if bs < be {
+            &src[tk[bs].0..tk[be.min(tk.len() - 1)].0]
+        } else {
+            ""
+        };
         if !ansi {
             for c in dir_decl.captures_iter(body) {
                 for e in split_top_level(&c[2], ',') {
-                    if let Some(n) = last_ident(e) {
-                        if let Some(p) = m.ports.iter_mut().find(|p| p.name == n) {
-                            p.direction = dir_of(&c[1]);
-                        }
+                    if let Some(n) = last_ident(e)
+                        && let Some(p) = m.ports.iter_mut().find(|p| p.name == n)
+                    {
+                        p.direction = dir_of(&c[1]);
                     }
                 }
             }
         }
         for c in sig_decl.captures_iter(body) {
-            let range = Regex::new(r"\[[^\]]*\]").unwrap().find(&c[2]).map(|r| format!(" {}", r.as_str())).unwrap_or_default();
+            let range = range_re
+                .find(&c[2])
+                .map(|r| format!(" {}", r.as_str()))
+                .unwrap_or_default();
             for e in split_top_level(&c[2], ',') {
                 if let Some(n) = last_ident(e) {
                     m.signals.insert(n, format!("{}{}", &c[1], range));
@@ -250,7 +356,8 @@ pub fn parse_sv(text: &str) -> Design {
     let stripped = strip_comments_sv(text);
     let directive = Regex::new(r"(?m)^[ \t]*`[^\n]*").unwrap();
     if directive.is_match(&stripped) {
-        d.warnings.push("preprocessor directives ignored; macros are not expanded".into());
+        d.warnings
+            .push("preprocessor directives ignored; macros are not expanded".into());
     }
     let src = directive.replace_all(&stripped, "").into_owned();
     let mods = parse_modules(&src);
@@ -262,7 +369,11 @@ pub fn parse_sv(text: &str) -> Design {
     let tops: Vec<&Module> = mods.iter().filter(|m| !instantiated(&m.name)).collect();
     let top = tops.first().copied().unwrap_or(&mods[0]);
     if tops.len() > 1 {
-        d.warnings.push(format!("{} modules are never instantiated; using {}", tops.len(), top.name));
+        d.warnings.push(format!(
+            "{} modules are never instantiated; using {}",
+            tops.len(),
+            top.name
+        ));
     }
     d.warnings.extend(top.warnings.iter().cloned());
     d.top_name = top.name.clone();
@@ -277,12 +388,20 @@ pub fn parse_sv(text: &str) -> Design {
                 continue;
             }
             let dir_for = |name: &str| {
-                known.and_then(|m| m.ports.iter().find(|p| p.name == name)).map_or_else(|| guess_direction(name), |p| p.direction)
+                known
+                    .and_then(|m| m.ports.iter().find(|p| p.name == name))
+                    .map_or_else(|| guess_direction(name), |p| p.direction)
             };
             if c.starts_with(".*") {
-                d.warnings.push(format!("instance {} uses .* wildcard connections; not expanded", raw.label));
+                d.warnings.push(format!(
+                    "instance {} uses .* wildcard connections; not expanded",
+                    raw.label
+                ));
             } else if let Some(rest) = c.strip_prefix('.') {
-                let name: String = rest.chars().take_while(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '$').collect();
+                let name: String = rest
+                    .chars()
+                    .take_while(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '$')
+                    .collect();
                 let after = rest[name.len()..].trim();
                 let sig = if after.starts_with('(') {
                     balanced_parens(after, 0).map(squash).unwrap_or_default()
@@ -297,9 +416,13 @@ pub fn parse_sv(text: &str) -> Design {
             }
         }
         if positional {
-            d.warnings.push(format!("positional connections in instance {} skipped: module {} not in this file", raw.label, raw.module));
+            d.warnings.push(format!(
+                "positional connections in instance {} skipped: module {} not in this file",
+                raw.label, raw.module
+            ));
         }
-        d.instances.push(Instance::new(&raw.label, &raw.module, ports));
+        d.instances
+            .push(Instance::new(&raw.label, &raw.module, ports));
     }
     d
 }
@@ -312,7 +435,10 @@ mod tests {
     const SAMPLE: &str = include_str!("../../tests/fixtures/sample_top.sv");
 
     fn inst<'a>(d: &'a Design, n: &str) -> &'a crate::model::Instance {
-        d.instances.iter().find(|i| i.name == n).unwrap_or_else(|| panic!("no instance {n}"))
+        d.instances
+            .iter()
+            .find(|i| i.name == n)
+            .unwrap_or_else(|| panic!("no instance {n}"))
     }
 
     #[test]
@@ -324,15 +450,39 @@ mod tests {
     #[test]
     fn ansi_ports_with_ranges() {
         let d = parse_sv(SAMPLE);
-        let got: Vec<_> = d.top_ports.iter().map(|p| (p.name.as_str(), p.direction)).collect();
-        assert_eq!(got, vec![("clk", Direction::In), ("din", Direction::In), ("din2", Direction::In), ("dout", Direction::Out), ("io", Direction::InOut)]);
+        let got: Vec<_> = d
+            .top_ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.direction))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("clk", Direction::In),
+                ("din", Direction::In),
+                ("din2", Direction::In),
+                ("dout", Direction::Out),
+                ("io", Direction::InOut)
+            ]
+        );
     }
 
     #[test]
     fn non_ansi_ports() {
         let d = parse_sv("module m (a, b, q); input a; input [3:0] b; output reg q; endmodule");
-        let got: Vec<_> = d.top_ports.iter().map(|p| (p.name.as_str(), p.direction)).collect();
-        assert_eq!(got, vec![("a", Direction::In), ("b", Direction::In), ("q", Direction::Out)]);
+        let got: Vec<_> = d
+            .top_ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.direction))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("a", Direction::In),
+                ("b", Direction::In),
+                ("q", Direction::Out)
+            ]
+        );
     }
 
     #[test]
@@ -340,8 +490,19 @@ mod tests {
         let d = parse_sv(SAMPLE);
         let u = inst(&d, "u_named");
         assert_eq!(u.entity, "sub_ni");
-        let got: Vec<_> = u.ports.iter().map(|p| (p.name.as_str(), p.signal.as_str(), p.direction)).collect();
-        assert_eq!(got, vec![("a", "clk", Direction::In), ("b", "din[3:0]", Direction::In), ("q", "ready", Direction::Out)]);
+        let got: Vec<_> = u
+            .ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.signal.as_str(), p.direction))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("a", "clk", Direction::In),
+                ("b", "din[3:0]", Direction::In),
+                ("q", "ready", Direction::Out)
+            ]
+        );
         let o = inst(&d, "u_other"); // module not in file: parameter override skipped, heuristic directions
         assert_eq!(o.ports.len(), 2);
     }
@@ -350,7 +511,11 @@ mod tests {
     fn positional_maps_by_order() {
         let d = parse_sv(SAMPLE);
         let u = inst(&d, "u_pos");
-        let got: Vec<_> = u.ports.iter().map(|p| (p.name.as_str(), p.signal.as_str())).collect();
+        let got: Vec<_> = u
+            .ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.signal.as_str()))
+            .collect();
         assert_eq!(got, vec![("a", "clk"), ("b", "din[7:4]"), ("q", "s1[0]")]);
     }
 
@@ -364,7 +529,11 @@ mod tests {
     fn unconnected_port_keeps_neighbours() {
         let d = parse_sv(SAMPLE);
         let u = inst(&d, "u_unconn");
-        let got: Vec<_> = u.ports.iter().map(|p| (p.name.as_str(), p.signal.as_str())).collect();
+        let got: Vec<_> = u
+            .ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.signal.as_str()))
+            .collect();
         assert_eq!(got, vec![("a", "clk"), ("b", ""), ("q", "ready")]);
     }
 

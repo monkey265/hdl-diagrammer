@@ -2,15 +2,15 @@ mod app;
 mod canvas;
 mod config;
 mod edit;
-mod history;
-mod recent;
 mod gates;
 mod geometry;
 mod group;
+mod history;
 mod layout;
 mod model;
 mod net;
 mod parser;
+mod recent;
 mod router;
 mod ui;
 

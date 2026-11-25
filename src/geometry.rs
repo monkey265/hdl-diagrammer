@@ -33,14 +33,22 @@ pub fn mark_segment(s: Seg, signal: &str, grid: i32, occ: &mut HashMap<Pt, HashS
         occ.entry(c).or_default().insert(signal.to_string());
     };
     if y1 == y2 {
-        (x1.min(x2)..=x1.max(x2)).step_by(grid as usize).for_each(|x| add((x, y1)));
+        (x1.min(x2)..=x1.max(x2))
+            .step_by(grid as usize)
+            .for_each(|x| add((x, y1)));
     } else if x1 == x2 {
-        (y1.min(y2)..=y1.max(y2)).step_by(grid as usize).for_each(|y| add((x1, y)));
+        (y1.min(y2)..=y1.max(y2))
+            .step_by(grid as usize)
+            .for_each(|y| add((x1, y)));
     }
 }
 
 /// Junction dots: grid points where one signal's unit segments meet more than twice, excluding ports.
-pub fn junctions(wires: &[(String, Vec<Seg>)], ports: &HashSet<Pt>, grid: i32) -> Vec<(String, Pt)> {
+pub fn junctions(
+    wires: &[(String, Vec<Seg>)],
+    ports: &HashSet<Pt>,
+    grid: i32,
+) -> Vec<(String, Pt)> {
     let mut out = Vec::new();
     for (sig, segs) in wires {
         let mut units: HashSet<Seg> = HashSet::new();
@@ -60,7 +68,12 @@ pub fn junctions(wires: &[(String, Vec<Seg>)], ports: &HashSet<Pt>, grid: i32) -
             *counts.entry(a).or_default() += 1;
             *counts.entry(b).or_default() += 1;
         }
-        out.extend(counts.into_iter().filter(|(p, n)| *n > 2 && !ports.contains(p)).map(|(p, _)| (sig.clone(), p)));
+        out.extend(
+            counts
+                .into_iter()
+                .filter(|(p, n)| *n > 2 && !ports.contains(p))
+                .map(|(p, _)| (sig.clone(), p)),
+        );
     }
     out
 }
@@ -79,7 +92,10 @@ mod tests {
 
     #[test]
     fn compress_removes_collinear() {
-        assert_eq!(compress_polyline(&[(0, 0), (10, 0), (20, 0), (20, 10), (20, 20)]), vec![(0, 0), (20, 0), (20, 20)]);
+        assert_eq!(
+            compress_polyline(&[(0, 0), (10, 0), (20, 0), (20, 10), (20, 20)]),
+            vec![(0, 0), (20, 0), (20, 20)]
+        );
         assert_eq!(compress_polyline(&[]), vec![]);
         assert_eq!(compress_polyline(&[(0, 0), (0, 0)]), vec![(0, 0)]);
     }
@@ -96,7 +112,10 @@ mod tests {
     #[test]
     fn junction_at_t_split() {
         // horizontal line 0..20 at y=0 with a branch going down from x=10
-        let w = vec![("s".to_string(), vec![((0, 0), (20, 0)), ((10, 0), (10, 10))])];
+        let w = vec![(
+            "s".to_string(),
+            vec![((0, 0), (20, 0)), ((10, 0), (10, 10))],
+        )];
         let j = junctions(&w, &HashSet::new(), 10);
         assert_eq!(j, vec![("s".to_string(), (10, 0))]);
         let ports: HashSet<Pt> = [(10, 0)].into();

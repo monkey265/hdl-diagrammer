@@ -1,5 +1,5 @@
 use crate::config::GRID_STEP;
-use crate::geometry::{junctions, mark_segment, snap, Pt, Seg};
+use crate::geometry::{Pt, Seg, junctions, mark_segment, snap};
 use crate::group::active_instances;
 use crate::layout::{arrange_grid, port_pos};
 use crate::model::{Diagram, Direction};
@@ -15,6 +15,7 @@ pub enum Ep {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // src/dst identify the net ends for upcoming per-wire actions; tests read them
 pub struct Wire {
     pub signal: String,
     pub src: Ep,
@@ -24,7 +25,10 @@ pub struct Wire {
 
 /// Build a laid-out diagram (block sizes and positions) from a parsed design.
 pub fn design_to_diagram(d: &Design, grid: i32) -> Diagram {
-    let mut diagram = Diagram { instances: d.instances.clone(), top_level_pins: d.top_ports.clone() };
+    let mut diagram = Diagram {
+        instances: d.instances.clone(),
+        top_level_pins: d.top_ports.clone(),
+    };
     arrange_grid(&mut diagram.instances, grid);
     diagram
 }
@@ -33,7 +37,9 @@ fn bbox(d: &Diagram) -> Option<(i32, i32, i32, i32)> {
     let vis = d.instances.iter().filter(|i| i.visible);
     vis.fold(None, |acc, i| {
         let (x0, y0, x1, y1) = (i.x, i.y, i.x + i.width, i.y + i.height);
-        Some(acc.map_or((x0, y0, x1, y1), |(a, b, c, e)| (a.min(x0), b.min(y0), c.max(x1), e.max(y1))))
+        Some(acc.map_or((x0, y0, x1, y1), |(a, b, c, e)| {
+            (a.min(x0), b.min(y0), c.max(x1), e.max(y1))
+        }))
     })
 }
 
@@ -44,10 +50,18 @@ pub fn top_pin_positions(d: &Diagram) -> Vec<Pt> {
     d.top_level_pins
         .iter()
         .map(|p| {
-            let k = if p.direction == Direction::In { &mut n_in } else { &mut n_out };
+            let k = if p.direction == Direction::In {
+                &mut n_in
+            } else {
+                &mut n_out
+            };
             let y = snap(y0 + 40 + *k * 40, GRID_STEP);
             *k += 1;
-            if p.direction == Direction::In { (snap(x0 - 100, GRID_STEP), y) } else { (snap(x1 + 100, GRID_STEP), y) }
+            if p.direction == Direction::In {
+                (snap(x0 - 100, GRID_STEP), y)
+            } else {
+                (snap(x1 + 100, GRID_STEP), y)
+            }
         })
         .collect()
 }
@@ -62,11 +76,12 @@ pub fn route_all(d: &Diagram) -> Vec<Wire> {
         if sig.is_empty() || sig.eq_ignore_ascii_case("open") {
             return;
         }
-        nets.entry(sig.to_string()).or_insert_with(|| {
-            order.push(sig.to_string());
-            Vec::new()
-        })
-        .push((ep, pos, drives));
+        nets.entry(sig.to_string())
+            .or_insert_with(|| {
+                order.push(sig.to_string());
+                Vec::new()
+            })
+            .push((ep, pos, drives));
     };
     for (k, p) in d.top_level_pins.iter().enumerate() {
         add(&p.signal, Ep::Top(k), pins[k], p.direction == Direction::In);
@@ -74,11 +89,18 @@ pub fn route_all(d: &Diagram) -> Vec<Wire> {
     let active = active_instances(d);
     for (ii, inst) in active.iter().enumerate() {
         for (pi, p) in inst.ports.iter().enumerate() {
-            add(&p.signal, Ep::Inst { inst: ii, port: pi }, port_pos(inst, pi), p.direction != Direction::In);
+            add(
+                &p.signal,
+                Ep::Inst { inst: ii, port: pi },
+                port_pos(inst, pi),
+                p.direction != Direction::In,
+            );
         }
     }
     let routed: Vec<&String> = order.iter().filter(|s| nets[*s].len() >= 2).collect();
-    let Some((x0, y0, x1, y1)) = bbox(d) else { return Vec::new() };
+    let Some((x0, y0, x1, y1)) = bbox(d) else {
+        return Vec::new();
+    };
     if routed.is_empty() {
         return Vec::new();
     }
@@ -88,10 +110,21 @@ pub fn route_all(d: &Diagram) -> Vec<Wire> {
         (bx0, by0, bx1, by1) = (bx0.min(x), by0.min(y), bx1.max(x), by1.max(y));
     }
     let floor = |v: i32| v.div_euclid(GRID_STEP) * GRID_STEP;
-    let bounds: Bounds = (floor(bx0 - 200), floor(bx1 + 200), floor(by0 - 150), floor(by1 + 150));
-    let router = Router { grid_step: GRID_STEP };
+    let bounds: Bounds = (
+        floor(bx0 - 200),
+        floor(bx1 + 200),
+        floor(by0 - 150),
+        floor(by1 + 150),
+    );
+    let router = Router {
+        grid_step: GRID_STEP,
+    };
     // an expanded group is only a frame: wires may cross it to reach its children
-    let blocks: Vec<_> = active.iter().filter(|i| !(i.is_group && !i.collapsed)).map(|i| (i.x, i.y, i.width, i.height)).collect();
+    let blocks: Vec<_> = active
+        .iter()
+        .filter(|i| !i.is_group || i.collapsed)
+        .map(|i| (i.x, i.y, i.width, i.height))
+        .collect();
     let occ = router.build_occupancy(&blocks, bounds, 30);
     let mut wire_occ = WireOcc::new();
     let mut wires = Vec::new();
@@ -101,8 +134,15 @@ pub fn route_all(d: &Diagram) -> Vec<Wire> {
         for dst in eps.iter().filter(|e| e.0 != src.0) {
             let poly = router.route_net(src.1, dst.1, &occ, &wire_occ, sig, bounds);
             let segments: Vec<Seg> = poly.windows(2).map(|w| (w[0], w[1])).collect();
-            segments.iter().for_each(|&s| mark_segment(s, sig, GRID_STEP, &mut wire_occ));
-            wires.push(Wire { signal: sig.clone(), src: src.0, dst: dst.0, segments });
+            segments
+                .iter()
+                .for_each(|&s| mark_segment(s, sig, GRID_STEP, &mut wire_occ));
+            wires.push(Wire {
+                signal: sig.clone(),
+                src: src.0,
+                dst: dst.0,
+                segments,
+            });
         }
     }
     wires
@@ -130,9 +170,26 @@ mod tests {
     use crate::model::{Instance, Port};
 
     fn two_blocks() -> Diagram {
-        let a = Instance::new("a", "A", vec![Port::new("o", Direction::Out, "n1"), Port::new("lonely", Direction::Out, "n_solo")]);
-        let b = Instance::new("b", "B", vec![Port::new("i", Direction::In, "n1"), Port::new("z", Direction::In, "open")]);
-        let mut d = Diagram { instances: vec![a, b], top_level_pins: vec![] };
+        let a = Instance::new(
+            "a",
+            "A",
+            vec![
+                Port::new("o", Direction::Out, "n1"),
+                Port::new("lonely", Direction::Out, "n_solo"),
+            ],
+        );
+        let b = Instance::new(
+            "b",
+            "B",
+            vec![
+                Port::new("i", Direction::In, "n1"),
+                Port::new("z", Direction::In, "open"),
+            ],
+        );
+        let mut d = Diagram {
+            instances: vec![a, b],
+            top_level_pins: vec![],
+        };
         crate::layout::arrange_grid(&mut d.instances, 20);
         d
     }
@@ -146,7 +203,11 @@ mod tests {
         assert_eq!(w[0].dst, Ep::Inst { inst: 1, port: 0 });
         assert!(!w[0].segments.is_empty());
         // every segment is axis-aligned
-        assert!(w[0].segments.iter().all(|((x1, y1), (x2, y2))| x1 == x2 || y1 == y2));
+        assert!(
+            w[0].segments
+                .iter()
+                .all(|((x1, y1), (x2, y2))| x1 == x2 || y1 == y2)
+        );
     }
 
     #[test]
@@ -175,11 +236,16 @@ mod tests {
 
     #[test]
     fn design_to_diagram_lays_out_and_keeps_original_ports() {
-        let des = crate::parser::vhdl::parse_vhdl(include_str!("../tests/fixtures/RC4_sync_top.vhd"));
+        let des =
+            crate::parser::vhdl::parse_vhdl(include_str!("../tests/fixtures/RC4_sync_top.vhd"));
         let d = design_to_diagram(&des, 20);
         assert_eq!(d.instances.len(), 5);
         assert_eq!(d.top_level_pins.len(), 6);
-        assert!(d.instances.iter().all(|i| i.width > 0 && i.height > 0 && i.original_ports == i.ports));
+        assert!(
+            d.instances
+                .iter()
+                .all(|i| i.width > 0 && i.height > 0 && i.original_ports == i.ports)
+        );
     }
 
     #[test]
@@ -193,7 +259,11 @@ mod tests {
         let des = crate::parser::vhdl::parse_vhdl(include_str!("../tests/fixtures/radio_top.vhd"));
         let w = route_all(&design_to_diagram(&des, 20));
         assert!(w.len() > 20);
-        assert!(w.iter().flat_map(|w| &w.segments).all(|((x1, y1), (x2, y2))| x1 == x2 || y1 == y2));
+        assert!(
+            w.iter()
+                .flat_map(|w| &w.segments)
+                .all(|((x1, y1), (x2, y2))| x1 == x2 || y1 == y2)
+        );
     }
 
     fn grouped(collapsed: bool) -> Diagram {
@@ -202,7 +272,10 @@ mod tests {
             (i.x, i.y, i.width, i.height) = (x, 0, 100, 80);
             i
         };
-        let mut d = Diagram { instances: vec![mk("a", 0, Direction::Out), mk("b", 300, Direction::In)], top_level_pins: vec![] };
+        let mut d = Diagram {
+            instances: vec![mk("a", 0, Direction::Out), mk("b", 300, Direction::In)],
+            top_level_pins: vec![],
+        };
         crate::group::create_group(&mut d, "G", &[0, 1], vec![]);
         if collapsed {
             crate::group::toggle_collapse(&mut d, 0, 20);

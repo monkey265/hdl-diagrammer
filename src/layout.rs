@@ -1,6 +1,6 @@
 use crate::config::*;
-use crate::gates::{gate_kind, GateKind};
-use crate::geometry::{snap, Pt};
+use crate::gates::{GateKind, gate_kind};
+use crate::geometry::{Pt, snap};
 use crate::model::{Direction, Instance};
 use std::collections::BTreeMap;
 
@@ -12,8 +12,16 @@ pub fn block_size(inst: &Instance, grid: i32) -> (i32, i32) {
     if inst.custom_width > 0 && inst.custom_height > 0 {
         return (inst.custom_width, inst.custom_height);
     }
-    let n_in = inst.ports.iter().filter(|p| p.direction != Direction::Out).count();
-    let n_out = inst.ports.iter().filter(|p| p.direction != Direction::In).count();
+    let n_in = inst
+        .ports
+        .iter()
+        .filter(|p| p.direction != Direction::Out)
+        .count();
+    let n_out = inst
+        .ports
+        .iter()
+        .filter(|p| p.direction != Direction::In)
+        .count();
     let mut h = ((n_in.max(n_out)) as i32 * PORT_HEIGHT + 40).max(MIN_BLOCK_HEIGHT);
     // no font metrics outside egui: estimate the name's width from its length
     let text_w = (inst.name.chars().count() as f32 * inst.font_size as f32 * 0.7) as i32 + 20;
@@ -22,8 +30,18 @@ pub fn block_size(inst: &Instance, grid: i32) -> (i32, i32) {
         if inst.children.is_empty() {
             (w, h) = (w.max(200), h.max(200));
         } else {
-            let max_x = inst.children.iter().map(|c| c.x + c.width).max().unwrap_or(0);
-            let max_y = inst.children.iter().map(|c| c.y + c.height).max().unwrap_or(0);
+            let max_x = inst
+                .children
+                .iter()
+                .map(|c| c.x + c.width)
+                .max()
+                .unwrap_or(0);
+            let max_y = inst
+                .children
+                .iter()
+                .map(|c| c.y + c.height)
+                .max()
+                .unwrap_or(0);
             w = w.max(max_x + 20 - inst.x);
             h = h.max(max_y + 20 - inst.y);
         }
@@ -33,11 +51,17 @@ pub fn block_size(inst: &Instance, grid: i32) -> (i32, i32) {
 
 /// Size every visible block; if all sit at (0,0) (fresh load), place them in a grid of rows/columns.
 pub fn arrange_grid(instances: &mut [Instance], grid: i32) {
-    let vis: Vec<usize> = (0..instances.len()).filter(|&i| instances[i].visible).collect();
+    let vis: Vec<usize> = (0..instances.len())
+        .filter(|&i| instances[i].visible)
+        .collect();
     for &i in &vis {
         (instances[i].width, instances[i].height) = block_size(&instances[i], grid);
     }
-    if vis.is_empty() || !vis.iter().all(|&i| instances[i].x == 0 && instances[i].y == 0) {
+    if vis.is_empty()
+        || !vis
+            .iter()
+            .all(|&i| instances[i].x == 0 && instances[i].y == 0)
+    {
         return;
     }
     let cols = (vis.len() as f64).sqrt().ceil() as usize;
@@ -58,21 +82,40 @@ pub fn arrange_grid(instances: &mut [Instance], grid: i32) {
 
 /// Absolute position of `inst.ports[port_idx]`: ANSI gate symbols and standard blocks differ.
 pub fn port_pos(inst: &Instance, port_idx: usize) -> Pt {
-    let Some(port) = inst.ports.get(port_idx) else { return (inst.x, inst.y) };
+    let Some(port) = inst.ports.get(port_idx) else {
+        return (inst.x, inst.y);
+    };
     if let Some(kind) = gate_kind(&inst.entity) {
         let center = snap(inst.y + inst.height / 2, 20);
         if port.direction == Direction::Out {
             return (inst.x + inst.width, center);
         }
-        let n_in = inst.ports.iter().filter(|p| p.direction != Direction::Out).count() as i32;
-        let idx = inst.ports[..port_idx].iter().filter(|p| p.direction != Direction::Out).count() as i32;
+        let n_in = inst
+            .ports
+            .iter()
+            .filter(|p| p.direction != Direction::Out)
+            .count() as i32;
+        let idx = inst.ports[..port_idx]
+            .iter()
+            .filter(|p| p.direction != Direction::Out)
+            .count() as i32;
         let start = snap(center - (n_in - 1) * 20 / 2, 20);
-        let dx = if matches!(kind, GateKind::Xor | GateKind::Xnor) { 10 } else { 0 };
+        let dx = if matches!(kind, GateKind::Xor | GateKind::Xnor) {
+            10
+        } else {
+            0
+        };
         return (inst.x + dx, start + idx * 20);
     }
     let left = port.direction == Direction::In;
-    let idx = inst.ports[..port_idx].iter().filter(|p| (p.direction == Direction::In) == left).count() as i32;
-    (if left { inst.x } else { inst.x + inst.width }, inst.y + 40 + idx * PORT_HEIGHT)
+    let idx = inst.ports[..port_idx]
+        .iter()
+        .filter(|p| (p.direction == Direction::In) == left)
+        .count() as i32;
+    (
+        if left { inst.x } else { inst.x + inst.width },
+        inst.y + 40 + idx * PORT_HEIGHT,
+    )
 }
 
 #[cfg(test)]
@@ -80,8 +123,14 @@ mod tests {
     use super::*;
     use crate::model::Port;
 
-    fn inst(n: &str, ports: Vec<Port>) -> Instance { Instance::new(n, "E", ports) }
-    fn ins(k: usize) -> Vec<Port> { (0..k).map(|i| Port::new(&format!("i{i}"), Direction::In, "s")).collect() }
+    fn inst(n: &str, ports: Vec<Port>) -> Instance {
+        Instance::new(n, "E", ports)
+    }
+    fn ins(k: usize) -> Vec<Port> {
+        (0..k)
+            .map(|i| Port::new(&format!("i{i}"), Direction::In, "s"))
+            .collect()
+    }
 
     #[test]
     fn block_size_respects_minimum() {
@@ -118,12 +167,17 @@ mod tests {
 
     #[test]
     fn arrange_grid_no_overlap() {
-        let mut v: Vec<Instance> = (0..7).map(|k| inst(&format!("u{k}"), ins(k * 2 + 1))).collect();
+        let mut v: Vec<Instance> = (0..7)
+            .map(|k| inst(&format!("u{k}"), ins(k * 2 + 1)))
+            .collect();
         arrange_grid(&mut v, 20);
         for (a, x) in v.iter().enumerate() {
             assert_eq!((x.x % 20, x.y % 20), (0, 0));
             for y in &v[a + 1..] {
-                let apart = x.x + x.width <= y.x || y.x + y.width <= x.x || x.y + x.height <= y.y || y.y + y.height <= x.y;
+                let apart = x.x + x.width <= y.x
+                    || y.x + y.width <= x.x
+                    || x.y + x.height <= y.y
+                    || y.y + y.height <= x.y;
                 assert!(apart, "{} overlaps {}", x.name, y.name);
             }
         }
@@ -140,7 +194,11 @@ mod tests {
 
     #[test]
     fn out_port_on_right_edge() {
-        let ports = vec![Port::new("in1", Direction::In, ""), Port::new("out1", Direction::Out, ""), Port::new("io", Direction::InOut, "")];
+        let ports = vec![
+            Port::new("in1", Direction::In, ""),
+            Port::new("out1", Direction::Out, ""),
+            Port::new("io", Direction::InOut, ""),
+        ];
         let mut i = inst("U1", ports);
         (i.x, i.y, i.width, i.height) = (100, 100, 100, 100);
         assert_eq!(port_pos(&i, 0).0, 100);
@@ -160,7 +218,14 @@ mod tests {
 
     #[test]
     fn gate_port_snaps_to_grid() {
-        let mut g = inst("U1", vec![Port::new("A", Direction::In, ""), Port::new("B", Direction::In, ""), Port::new("Z", Direction::Out, "")]);
+        let mut g = inst(
+            "U1",
+            vec![
+                Port::new("A", Direction::In, ""),
+                Port::new("B", Direction::In, ""),
+                Port::new("Z", Direction::Out, ""),
+            ],
+        );
         g.entity = "AND2".into();
         (g.x, g.y, g.width, g.height) = (100, 100, 60, 50);
         for k in 0..3 {

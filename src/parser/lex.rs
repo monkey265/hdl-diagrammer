@@ -6,13 +6,17 @@ pub fn strip_comments_vhdl(src: &str) -> String {
     while let Some(c) = it.next() {
         if in_str {
             out.push(c);
-            if c == '"' { in_str = false; }
+            if c == '"' {
+                in_str = false;
+            }
         } else if c == '"' {
             in_str = true;
             out.push(c);
         } else if c == '-' && it.peek() == Some(&'-') {
             while let Some(&n) = it.peek() {
-                if n == '\n' { break; }
+                if n == '\n' {
+                    break;
+                }
                 it.next();
             }
         } else {
@@ -31,7 +35,9 @@ pub fn strip_comments_sv(src: &str) -> String {
         if in_str {
             out.push(c);
             if c == '\\' {
-                if let Some(n) = it.next() { out.push(n); }
+                if let Some(n) = it.next() {
+                    out.push(n);
+                }
             } else if c == '"' {
                 in_str = false;
             }
@@ -40,15 +46,21 @@ pub fn strip_comments_sv(src: &str) -> String {
             out.push(c);
         } else if c == '/' && it.peek() == Some(&'/') {
             while let Some(&n) = it.peek() {
-                if n == '\n' { break; }
+                if n == '\n' {
+                    break;
+                }
                 it.next();
             }
         } else if c == '/' && it.peek() == Some(&'*') {
             it.next();
             let mut prev = '\0';
             for n in it.by_ref() {
-                if n == '\n' { out.push('\n'); }
-                if prev == '*' && n == '/' { break; }
+                if n == '\n' {
+                    out.push('\n');
+                }
+                if prev == '*' && n == '/' {
+                    break;
+                }
                 prev = n;
             }
             out.push(' ');
@@ -102,7 +114,11 @@ mod tests {
 
     #[test]
     fn vhdl_comment_hides_keyword() {
-        assert!(!strip_comments_vhdl("-- entity foo\nx").to_lowercase().contains("entity"));
+        assert!(
+            !strip_comments_vhdl("-- entity foo\nx")
+                .to_lowercase()
+                .contains("entity")
+        );
         assert!(strip_comments_vhdl("-- c\nx").ends_with("x"));
     }
 

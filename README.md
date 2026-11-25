@@ -1,38 +1,34 @@
-# Instalation
+# hdl-diagrammer
 
-In root of this project run following.
-1. `pip install tk`
-2. `pip install -e .`
-3. `python -m vhdl_diagramer`
+Draws a VHDL or SystemVerilog top level as a block diagram: instances, ports and routed nets.
+Rust + egui/eframe; a rewrite of the earlier Python/Tk `vhdl-diagrammer`.
 
-# Debug mode
+## Run
 
-To run in debug mode run `python -m vhdl_diagramer --debug`.
+```
+cargo run --release -- path/to/top.vhd     # or .sv / .v / .vhdl / a saved .json diagram
+```
 
+or start without an argument and use File > Open. Checks: `./run_checks.sh`.
 
+## What it reads
 
-# TODO
-- VHDL features:
-  - [ ] Open keyword to be recognized
-- [x] Add ability to move blocks
-- Add right click menu:
-  - [x] Change color
-  - [ ] Change size
-  - [ ] Delete ports
-  - [x] Add drag lock
-  - [] Add pin lock
+Hand-written scanners, one file at a time. Instances of modules defined in other files are shown as
+opaque blocks (pin directions guessed from port names). Anything it cannot handle is listed as a
+warning at the bottom of the window instead of being dropped silently:
+generate blocks (listed once, not expanded), `.*` connections, interface ports, macros and
+`` `include ``, gate primitives.
 
-- [x] Add save/load
-- [x] Add recently opened
-- [x] Undo/redo button
-- [ ] Performance optimization  
-- [ ] Automatically find AXI and wrap them
-- [ ] Add overlay around whole diagram with top level pins if they exist
-- [ ] Export to various formats
-- [ ] Render signals
-- [ ] Render logical operations with nets
-- [x] Split the code into packages to make it more maintainable
-- [ ] Add suport for components
-- [ ] Make a list of nets/ports/unused etc...
-- [ ] tcl interface
-- [ ] Support for verilog?
+## Using it
+
+- Click / shift-click to select, drag blocks (grid snap, pushed off overlaps), middle-drag or drag the background to pan, scroll to zoom.
+- Right-click a block, pin or the background: rename, colour, size, lock, delete / restore, reset ports, group, collapse.
+- Click a wire (or a net in the inspector) to highlight it.
+- Ctrl+Z / Ctrl+Y undo and redo. File > Save As writes JSON compatible with the old Python app.
+
+## Known gaps vs the Python app
+
+No per-pin colours, wire context actions (reset route, delete connection, bus style, manual route
+dragging), resize handles, pin-to-pin wiring, dragging children inside an expanded group, font
+bold/italic, the paste-VHDL dialog and `--debug`. VHDL `open` keyword is kept as a net named `open`
+and not routed. Layouts for very large designs are not optimised.

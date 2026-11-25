@@ -10,10 +10,18 @@ pub enum Direction {
     InOut,
 }
 
-fn arial() -> String { "Arial".into() }
-fn t() -> bool { true }
-fn f8() -> u32 { 8 }
-fn f10() -> u32 { 10 }
+fn arial() -> String {
+    "Arial".into()
+}
+fn t() -> bool {
+    true
+}
+fn f8() -> u32 {
+    8
+}
+fn f10() -> u32 {
+    10
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Port {
@@ -32,7 +40,15 @@ pub struct Port {
 
 impl Port {
     pub fn new(name: &str, direction: Direction, signal: &str) -> Self {
-        Port { name: name.into(), direction, signal: signal.into(), font_family: arial(), font_size: 8, font_bold: false, font_italic: false }
+        Port {
+            name: name.into(),
+            direction,
+            signal: signal.into(),
+            font_family: arial(),
+            font_size: 8,
+            font_bold: false,
+            font_italic: false,
+        }
     }
 }
 
@@ -80,11 +96,26 @@ pub struct Instance {
 impl Instance {
     pub fn new(name: &str, entity: &str, ports: Vec<Port>) -> Self {
         Instance {
-            name: name.into(), entity: entity.into(), original_ports: ports.clone(), ports,
-            x: 0, y: 0, width: 0, height: 0, color_override: None, locked: false,
-            custom_width: 0, custom_height: 0, visible: true, font_family: arial(),
-            font_size: 10, font_bold: true, font_italic: false, is_group: false,
-            collapsed: false, children: vec![],
+            name: name.into(),
+            entity: entity.into(),
+            original_ports: ports.clone(),
+            ports,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            color_override: None,
+            locked: false,
+            custom_width: 0,
+            custom_height: 0,
+            visible: true,
+            font_family: arial(),
+            font_size: 10,
+            font_bold: true,
+            font_italic: false,
+            is_group: false,
+            collapsed: false,
+            children: vec![],
         }
     }
 }
@@ -98,8 +129,12 @@ pub struct Diagram {
 }
 
 impl Diagram {
-    pub fn from_json(s: &str) -> Result<Diagram, serde_json::Error> { serde_json::from_str(s) }
-    pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).expect("model serializes") }
+    pub fn from_json(s: &str) -> Result<Diagram, serde_json::Error> {
+        serde_json::from_str(s)
+    }
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).expect("model serializes")
+    }
 }
 
 #[cfg(test)]

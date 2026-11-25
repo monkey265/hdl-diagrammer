@@ -16,18 +16,23 @@ pub fn add(list: &mut Vec<String>, path: &str) {
 }
 
 fn config_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".hdl_diagrammer_config.json"))
+    std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".hdl_diagrammer_config.json"))
 }
 
 /// Missing or unreadable config is not an error: start with no recents.
 pub fn load() -> Vec<String> {
     let text = config_path().and_then(|p| std::fs::read_to_string(p).ok());
-    text.and_then(|t| serde_json::from_str::<Config>(&t).ok()).map(|c| c.recent_files).unwrap_or_default()
+    text.and_then(|t| serde_json::from_str::<Config>(&t).ok())
+        .map(|c| c.recent_files)
+        .unwrap_or_default()
 }
 
 pub fn save(list: &[String]) {
     if let Some(p) = config_path() {
-        let cfg = Config { recent_files: list.to_vec() };
+        let cfg = Config {
+            recent_files: list.to_vec(),
+        };
         let _ = std::fs::write(p, serde_json::to_string(&cfg).unwrap_or_default()); // best effort
     }
 }
