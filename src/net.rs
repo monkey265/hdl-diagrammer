@@ -167,10 +167,13 @@ pub fn top_pin_positions(d: &Diagram) -> Vec<Pt> {
     out
 }
 
+/// (endpoint, position, drives the net, stub direction, lane or -1)
+type Endpoint = (Ep, Pt, bool, i32, i32);
+
 const LANES: i32 = 6;
 
 /// Where a pin's wire enters the routing grid: out along its side, `lane` columns past the block margin.
-fn lane_cell(e: &(Ep, Pt, bool, i32, i32), occ: &crate::router::Occupancy) -> Pt {
+fn lane_cell(e: &Endpoint, occ: &crate::router::Occupancy) -> Pt {
     if e.4 < 0 {
         return e.1;
     }
@@ -189,7 +192,7 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
     let pins = top_pin_positions(d);
     // (endpoint, position, drives the net?) grouped by signal, in first-seen order
     let mut order: Vec<String> = Vec::new();
-    let mut nets: HashMap<String, Vec<(Ep, Pt, bool, i32, i32)>> = HashMap::new();
+    let mut nets: HashMap<String, Vec<Endpoint>> = HashMap::new();
     let mut add = |sig: &str, ep: Ep, pos: Pt, drives: bool, dir: i32, lane: i32| {
         if sig.is_empty() || sig.eq_ignore_ascii_case("open") {
             return;
@@ -469,23 +472,18 @@ mod tests {
     }
 
     #[test]
-    fn print_overlap_baseline() {
-        for (n, src) in [
-            ("radio", include_str!("../tests/fixtures/radio_top.vhd")),
-            ("rc4", include_str!("../tests/fixtures/RC4_sync_top.vhd")),
+    fn different_nets_rarely_run_on_top_of_each_other() {
+        // before lanes/auto layout (stubs mode): radio 975 cells, rc4 53; keep well below that
+        for (src, limit) in [
+            (include_str!("../tests/fixtures/radio_top.vhd"), 450),
+            (include_str!("../tests/fixtures/RC4_sync_top.vhd"), 20),
         ] {
             let d = design_to_diagram(&crate::parser::vhdl::parse_vhdl(src), 20);
-            let w = route_all(&d);
-            eprintln!(
-                "OVERLAP {n}: {} shared of wires {}",
-                shared_cells(&w),
-                w.len()
-            );
-            let w2 = route_all_opts(&d, true).wires;
-            eprintln!(
-                "OVERLAP {n} stubs mode: {} of {}",
-                shared_cells(&w2),
-                w2.len()
+            let w = route_all_opts(&d, true).wires;
+            assert!(
+                shared_cells(&w) < limit,
+                "{} cells overlap",
+                shared_cells(&w)
             );
         }
     }
