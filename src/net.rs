@@ -1,5 +1,5 @@
 use crate::config::GRID_STEP;
-use crate::geometry::{Pt, Seg, junctions, mark_segment, snap};
+use crate::geometry::{Pt, Seg, compress_polyline, junctions, mark_segment, snap};
 use crate::group::active_instances;
 use crate::layout::{arrange_grid, port_pos};
 use crate::model::{Diagram, Direction};
@@ -167,6 +167,17 @@ pub fn top_pin_positions(d: &Diagram) -> Vec<Pt> {
     out
 }
 
+const LANES: i32 = 6;
+
+/// Where a pin's wire enters the routing grid: out along its side, `lane` columns past the block margin.
+fn lane_cell(e: &(Ep, Pt, bool, i32, i32), occ: &crate::router::Occupancy) -> Pt {
+    if e.4 < 0 {
+        return e.1;
+    }
+    let c = (e.1.0 + e.3 * (40 + e.4 * GRID_STEP), e.1.1);
+    if occ.get(&c) == Some(&false) { c } else { e.1 }
+}
+
 /// Route every net, global ones included.
 pub fn route_all(d: &Diagram) -> Vec<Wire> {
     route_all_opts(d, false).wires
@@ -178,8 +189,8 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
     let pins = top_pin_positions(d);
     // (endpoint, position, drives the net?) grouped by signal, in first-seen order
     let mut order: Vec<String> = Vec::new();
-    let mut nets: HashMap<String, Vec<(Ep, Pt, bool, i32)>> = HashMap::new();
-    let mut add = |sig: &str, ep: Ep, pos: Pt, drives: bool, dir: i32| {
+    let mut nets: HashMap<String, Vec<(Ep, Pt, bool, i32, i32)>> = HashMap::new();
+    let mut add = |sig: &str, ep: Ep, pos: Pt, drives: bool, dir: i32, lane: i32| {
         if sig.is_empty() || sig.eq_ignore_ascii_case("open") {
             return;
         }
@@ -188,7 +199,7 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
                 order.push(sig.to_string());
                 Vec::new()
             })
-            .push((ep, pos, drives, dir));
+            .push((ep, pos, drives, dir, lane));
     };
     for (k, p) in d.top_level_pins.iter().enumerate() {
         add(
@@ -197,6 +208,7 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
             pins[k],
             p.direction == Direction::In,
             if p.direction == Direction::In { 1 } else { -1 },
+            -1,
         );
     }
     let active = active_instances(d);
@@ -208,6 +220,12 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
                 port_pos(inst, pi),
                 p.direction != Direction::In,
                 if p.direction == Direction::In { -1 } else { 1 },
+                // pins on one side leave on different columns so their vertical runs do not coincide
+                inst.ports[..pi]
+                    .iter()
+                    .filter(|q| (q.direction == Direction::In) == (p.direction == Direction::In))
+                    .count() as i32
+                    % LANES,
             );
         }
     }
@@ -272,7 +290,11 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
         let eps = &nets[sig];
         let src = eps.iter().find(|e| e.2).unwrap_or(&eps[0]);
         for dst in eps.iter().filter(|e| e.0 != src.0) {
-            let poly = router.route_net(src.1, dst.1, &occ, &wire_occ, sig, bounds);
+            let (a, b) = (lane_cell(src, &occ), lane_cell(dst, &occ));
+            let mut poly = vec![src.1];
+            poly.extend(router.route_net(a, b, &occ, &wire_occ, sig, bounds));
+            poly.push(dst.1);
+            let poly = compress_polyline(&poly);
             let segments: Vec<Seg> = poly.windows(2).map(|w| (w[0], w[1])).collect();
             segments
                 .iter()
@@ -434,15 +456,16 @@ mod tests {
         assert!(route_all(&grouped(true)).is_empty());
     }
 
-    /// Unit segments (on the routing grid) used by two or more different signals.
+    /// Grid cells where two different signals run in the same direction (real overlap; crossings do not count).
     fn shared_cells(w: &[Wire]) -> usize {
-        let mut occ = WireOcc::new();
+        let (mut h, mut v) = (WireOcc::new(), WireOcc::new());
         for x in w {
-            x.segments
-                .iter()
-                .for_each(|&sg| mark_segment(sg, &x.signal, GRID_STEP, &mut occ));
+            for &sg in &x.segments {
+                let m = if (sg.0).1 == (sg.1).1 { &mut h } else { &mut v };
+                mark_segment(sg, &x.signal, GRID_STEP, m);
+            }
         }
-        occ.values().filter(|s| s.len() > 1).count()
+        h.values().chain(v.values()).filter(|s| s.len() > 1).count()
     }
 
     #[test]
@@ -457,6 +480,12 @@ mod tests {
                 "OVERLAP {n}: {} shared of wires {}",
                 shared_cells(&w),
                 w.len()
+            );
+            let w2 = route_all_opts(&d, true).wires;
+            eprintln!(
+                "OVERLAP {n} stubs mode: {} of {}",
+                shared_cells(&w2),
+                w2.len()
             );
         }
     }
