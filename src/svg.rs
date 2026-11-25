@@ -109,6 +109,11 @@ pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
         pts.push((b.x, b.y));
         pts.push((b.x + b.width, b.y + b.height));
     }
+    for w in &wires {
+        for &(a, b) in &w.segments {
+            pts.extend([a, b]);
+        }
+    }
     let (x0, y0, x1, y1) = pts.iter().fold((0, 0, 0, 0), |a, p| {
         (a.0.min(p.0), a.1.min(p.1), a.2.max(p.0), a.3.max(p.1))
     });
@@ -257,6 +262,26 @@ end;";
         assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
         assert_eq!(svg.matches("stroke=\"#333333\"").count(), 2); // one rect per block
         assert!(svg.contains("<line "), "wires drawn");
+        let vb: Vec<i32> = svg
+            .split("viewBox=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .split(' ')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let w = route_all_opts(&d, true).wires;
+        assert!(
+            w.iter()
+                .flat_map(|w| &w.segments)
+                .all(|&((ax, ay), (bx, by))| {
+                    [ax, bx].iter().all(|x| (vb[0]..=vb[0] + vb[2]).contains(x))
+                        && [ay, by].iter().all(|y| (vb[1]..=vb[1] + vb[3]).contains(y))
+                }),
+            "viewBox contains every wire"
+        );
         assert!(svg.contains("a&lt;&amp;&gt;b") && !svg.contains("a<&>b"));
     }
 
