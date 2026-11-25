@@ -46,6 +46,7 @@ pub struct Canvas {
     pub show_grid: bool,
     pub show_signal_names: bool,
     pub show_unconnected: bool,
+    pub dark: bool,
     pub fit_requested: bool,
     pub selected: Vec<usize>,
     pub highlight: Option<String>,
@@ -64,6 +65,7 @@ impl Default for Canvas {
             show_grid: true,
             show_signal_names: true,
             show_unconnected: true,
+            dark: true,
             fit_requested: true,
             selected: vec![],
             highlight: None,
@@ -89,9 +91,56 @@ pub fn parse_hex(s: &str) -> Option<Color32> {
     Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
-fn signal_style(sig: &str, signals: &HashMap<String, String>) -> (Color32, f32) {
-    let (c, w) = class_style(net_class(sig, signals));
+fn signal_style(sig: &str, signals: &HashMap<String, String>, dark: bool) -> (Color32, f32) {
+    let (c, w) = class_style(net_class(sig, signals), dark);
     (rgb(c), w)
+}
+
+/// Canvas colours; the dark set is the default (Questa-style black schematic).
+struct Palette {
+    bg: Color32,
+    grid: Color32,
+    block: Color32,
+    line: Color32,
+    select: Color32,
+    locked: Color32,
+    text: Color32,
+    dim: Color32,
+    group: Color32,
+    group_sub: Color32,
+}
+
+impl Palette {
+    fn new(dark: bool) -> Self {
+        let g = Color32::from_gray;
+        if dark {
+            Palette {
+                bg: Color32::from_rgb(0x0B, 0x0F, 0x14),
+                grid: Color32::from_rgb(0x17, 0x1D, 0x25),
+                block: Color32::from_rgb(0x17, 0x22, 0x2C),
+                line: g(150),
+                select: Color32::from_rgb(0xFF, 0xD6, 0x00),
+                locked: Color32::from_rgb(0xEF, 0x53, 0x50),
+                text: Color32::from_rgb(0xE6, 0xED, 0xF3),
+                dim: Color32::from_rgb(0x8F, 0xA3, 0xB0),
+                group: Color32::from_rgb(0x3A, 0x2A, 0x45),
+                group_sub: Color32::from_rgb(0x90, 0xCA, 0xF9),
+            }
+        } else {
+            Palette {
+                bg: Color32::WHITE,
+                grid: g(235),
+                block: rgb(INSTANCE_BG),
+                line: g(60),
+                select: rgb(HIGHLIGHT),
+                locked: Color32::from_rgb(0xD3, 0x2F, 0x2F),
+                text: Color32::BLACK,
+                dim: Color32::DARK_GRAY,
+                group: Color32::from_rgb(0xE1, 0xBE, 0xE7),
+                group_sub: Color32::BLUE,
+            }
+        }
+    }
 }
 
 impl Canvas {
@@ -354,11 +403,12 @@ impl Canvas {
         let font = |pt: f32| FontId::proportional((pt * z).max(1.0));
         let text_ok = |pt: f32| pt * z >= 5.0;
 
-        painter.rect_filled(view, 0.0, Color32::WHITE);
+        let pal = Palette::new(self.dark);
+        painter.rect_filled(view, 0.0, pal.bg);
         if self.show_grid {
             let step = scene.grid as f32 * z;
             if step >= 6.0 {
-                let faint = Stroke::new(1.0, Color32::from_gray(235));
+                let faint = Stroke::new(1.0, pal.grid);
                 let mut x = view.min.x + (self.pan.x).rem_euclid(step);
                 while x < view.max.x {
                     painter
@@ -387,9 +437,9 @@ impl Canvas {
         let dim = self.highlight.is_some() || hot.is_some();
         let pick = |sig: &str| -> (Color32, f32) {
             if self.highlight.as_deref() == Some(sig) {
-                (rgb(HIGHLIGHT), 3.0)
+                (pal.select, 3.0)
             } else {
-                let (c, w) = signal_style(sig, scene.signals);
+                let (c, w) = signal_style(sig, scene.signals, self.dark);
                 if dim && !hot.as_ref().is_some_and(|h| h.contains(sig)) {
                     (c.gamma_multiply(0.25), w)
                 } else {
@@ -398,6 +448,7 @@ impl Canvas {
             }
         };
         let mut labelled: std::collections::HashSet<&str> = Default::default();
+        let mut placed: Vec<Rect> = Vec::new(); // net labels already drawn, so none overlap
         for w in scene.wires {
             let (color, width) = pick(&w.signal);
             for &(a, b) in &w.segments {
@@ -417,11 +468,13 @@ impl Canvas {
                 let mid = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
                 let g = painter.layout_no_wrap(w.signal.clone(), font(8.0), color);
                 let pos = to_s(mid) - Vec2::new(g.size().x / 2.0, g.size().y + 2.0 * z);
-                painter.rect_filled(
-                    Rect::from_min_size(pos, g.size()).expand(1.0),
-                    1.0,
-                    Color32::WHITE.gamma_multiply(0.85),
-                );
+                let rect = Rect::from_min_size(pos, g.size()).expand(1.0);
+                let wanted = self.highlight.as_deref() == Some(w.signal.as_str());
+                if !wanted && placed.iter().any(|p| p.intersects(rect)) {
+                    continue;
+                }
+                placed.push(rect);
+                painter.rect_filled(rect, 1.0, pal.bg.gamma_multiply(0.85));
                 painter.galley(pos, g, color);
             }
         }
@@ -492,11 +545,7 @@ impl Canvas {
                     anchor,
                     &pin.name,
                     font(9.0),
-                    if linked {
-                        Color32::BLACK
-                    } else {
-                        Color32::GRAY
-                    },
+                    if linked { pal.text } else { Color32::GRAY },
                 );
             }
         }
@@ -521,22 +570,23 @@ impl Canvas {
             to_s(inst.x, inst.y),
             to_s(inst.x + inst.width, inst.y + inst.height),
         );
+        let pal = Palette::new(self.dark);
         let line = if selected {
-            rgb(HIGHLIGHT)
+            pal.select
         } else if inst.locked {
-            Color32::from_rgb(0xD3, 0x2F, 0x2F)
+            pal.locked
         } else {
-            Color32::from_gray(60)
+            pal.line
         };
         let stroke = Stroke::new(if selected { 3.0 } else { 1.5 }, line);
         let user_fill = inst.color_override.as_deref().and_then(parse_hex);
         let expanded_group = inst.is_group && !inst.collapsed;
 
         if let Some(kind) = gate_kind(&inst.entity) {
-            let fill = user_fill.unwrap_or(if selected {
+            let fill = user_fill.unwrap_or(if selected && !self.dark {
                 Color32::from_rgb(0xFF, 0xF5, 0x9D)
             } else {
-                Color32::WHITE
+                pal.block
             });
             let body_w = inst.width as f32 - if kind.bubble() { 10.0 } else { 0.0 };
             let map = |&(px, py): &(f32, f32)| {
@@ -559,7 +609,7 @@ impl Canvas {
             }
             if kind.bubble() {
                 let c = to_s(inst.x + inst.width - 5, inst.y + inst.height / 2);
-                painter.circle(c, 5.0 * z, Color32::WHITE, stroke);
+                painter.circle(c, 5.0 * z, pal.bg, stroke);
             }
             if text_ok(8.0) {
                 painter.text(
@@ -567,16 +617,11 @@ impl Canvas {
                     Align2::CENTER_TOP,
                     &inst.name,
                     font(8.0),
-                    Color32::BLACK,
+                    pal.text,
                 );
             }
         } else {
-            let group_color = Color32::from_rgb(0xE1, 0xBE, 0xE7);
-            let fill = user_fill.unwrap_or(if inst.is_group {
-                group_color
-            } else {
-                rgb(INSTANCE_BG)
-            });
+            let fill = user_fill.unwrap_or(if inst.is_group { pal.group } else { pal.block });
             if expanded_group {
                 let frame = [
                     r.left_top(),
@@ -587,7 +632,7 @@ impl Canvas {
                 ];
                 painter.extend(egui::Shape::dashed_line(
                     &frame,
-                    Stroke::new(1.0, Color32::from_gray(90)),
+                    Stroke::new(1.0, pal.dim),
                     6.0 * z,
                     4.0 * z,
                 ));
@@ -604,7 +649,7 @@ impl Canvas {
                     Align2::RIGHT_TOP,
                     "locked",
                     font(7.0),
-                    Color32::from_rgb(0xD3, 0x2F, 0x2F),
+                    pal.locked,
                 );
             }
             if text_ok(inst.font_size as f32) {
@@ -613,12 +658,12 @@ impl Canvas {
                     Align2::CENTER_TOP,
                     &inst.name,
                     font(inst.font_size as f32),
-                    Color32::BLACK,
+                    pal.text,
                 );
                 let (sub, col) = if inst.is_group {
-                    ("(Group)".to_string(), Color32::BLUE)
+                    ("(Group)".to_string(), pal.group_sub)
                 } else {
-                    (format!("({})", inst.entity), Color32::DARK_GRAY)
+                    (format!("({})", inst.entity), pal.dim)
                 };
                 painter.text(
                     r.center_top() + Vec2::new(0.0, (inst.font_size as f32 + 10.0) * z),
@@ -656,7 +701,7 @@ impl Canvas {
                     anchor,
                     &p.name,
                     font(p.font_size as f32),
-                    Color32::BLACK,
+                    pal.text,
                 );
             }
         }

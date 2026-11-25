@@ -42,7 +42,7 @@ Scripts run in an embedded [molt](https://crates.io/crates/molt) interpreter (a 
 hdl-diagrammer --script run.tcl [file.vhd]        # headless, exit code 1 on a Tcl error
 hdl-diagrammer file.vhd --script run.tcl --gui    # run, then open the window
 ```
-The same commands run in View > Tcl console, sharing the GUI's undo history.
+The same commands run in the Transcript pane at the bottom of the window (`VSIM>` prompt; Up/Down recall history, Tab completes command names), sharing the GUI's undo history. `puts` output appears there too. The window is laid out like Questa Sim: a dark theme, a Structure pane on the left (design hierarchy, search, click to go to a block), an Objects pane on the right (ports of the selected block, net list) and the Transcript below. Each pane can be hidden from the View menu; View > Dark theme switches to a light canvas.
 
 | command | effect |
 |---|---|
@@ -55,7 +55,7 @@ The same commands run in View > Tcl console, sharing the GUI's undo history.
 | `undo`, `redo` | one step per command |
 
 Errors are ordinary Tcl errors (catchable with `catch`) and leave the diagram unchanged.
-Children of an expanded group cannot be addressed by name yet; `puts` prints to the terminal, not the console panel.
+Children of an expanded group cannot be addressed by name yet.
 
 ## Reading big diagrams
 

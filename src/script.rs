@@ -17,6 +17,8 @@ pub struct Session {
     pub warnings: Vec<String>,
     pub grid: i32,
     pub history: History<Diagram>,
+    /// Text from `puts` since the last `eval`, shown in the GUI transcript.
+    pub output: Vec<String>,
     /// Set by `open`; the GUI reacts by refitting the view and dropping its selection.
     pub opened: bool,
 }
@@ -265,11 +267,28 @@ fn interfaces(s: &mut Session, a: &[String]) -> Result<Value, String> {
     }
 }
 
+fn puts(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    // `puts text`, `puts -nonewline text`, `puts stdout text` (stderr too): all just print a line
+    let text = match a {
+        [t] => t,
+        [flag, t] if flag == "-nonewline" || flag == "stdout" || flag == "stderr" => t,
+        _ => return Err("usage: puts ?-nonewline? ?stdout|stderr? string".into()),
+    };
+    s.output.push(text.clone());
+    Ok(Value::empty())
+}
+
+/// Command names for tab completion.
+pub fn command_names() -> impl Iterator<Item = &'static str> {
+    COMMANDS.iter().map(|c| c.0)
+}
+
 /// (name, usage after the name, min args, max args, handler)
 const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     ("open", "file", 1, 1, open),
     ("save", "file.json", 1, 1, save),
     ("export", "file.svg|file.png", 1, 1, export),
+    ("puts", "string", 1, 2, puts),
     ("validate", "", 0, 0, validate),
     ("interfaces", "collapse|expand", 1, 1, interfaces),
     ("instances", "", 0, 0, instances),
@@ -386,11 +405,19 @@ impl Script {
     }
 
     /// Run a script; `Ok` is the result text, `Err` the Tcl error message.
+    /// Anything the script `puts` comes first, one line each, then the result (or error).
     pub fn eval(&mut self, src: &str) -> Result<String, String> {
-        match self.interp.eval(src) {
-            Ok(v) => Ok(v.as_str().to_string()),
-            Err(e) => Err(e.value().as_str().to_string()),
+        let r = self.interp.eval(src);
+        let mut lines = std::mem::take(&mut self.session().output);
+        let (ok, text) = match r {
+            Ok(v) => (true, v.as_str().to_string()),
+            Err(e) => (false, e.value().as_str().to_string()),
+        };
+        if !text.is_empty() {
+            lines.push(text);
         }
+        let joined = lines.join("\n");
+        if ok { Ok(joined) } else { Err(joined) }
     }
 
     pub fn session(&mut self) -> &mut Session {
@@ -575,5 +602,16 @@ mod tests {
         assert!(!s.eval("instances").unwrap().contains(&b));
         s.eval("undo").unwrap();
         assert!(s.eval("instances").unwrap().contains('G'));
+    }
+
+    #[test]
+    fn puts_is_captured_with_the_result() {
+        let mut s = script();
+        assert_eq!(
+            s.eval("puts hello; puts -nonewline there; expr 1+1")
+                .unwrap(),
+            "hello\nthere\n2"
+        );
+        assert!(s.eval("puts a b c").is_err());
     }
 }
