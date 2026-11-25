@@ -1,4 +1,5 @@
 pub mod lex;
+pub mod vhdl;
 
 use crate::model::{Instance, Port};
 use std::collections::HashMap;
@@ -15,6 +16,8 @@ pub struct Design {
 /// Dispatch on file extension; unknown extensions yield an empty design with a warning.
 pub fn parse_file(path_or_ext: &str, text: &str) -> Design {
     let ext = path_or_ext.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    let _ = text;
-    Design { warnings: vec![format!("unsupported file type '.{ext}'")], ..Default::default() }
+    match ext.as_str() {
+        "vhd" | "vhdl" => vhdl::parse_vhdl(text),
+        _ => Design { warnings: vec![format!("unsupported file type '.{ext}'")], ..Default::default() },
+    }
 }

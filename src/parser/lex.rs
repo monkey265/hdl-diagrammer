@@ -78,6 +78,24 @@ pub fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     parts
 }
 
+/// Text between the `(` at byte index `open` and its matching `)` (exclusive), if balanced.
+pub fn balanced_parens(s: &str, open: usize) -> Option<&str> {
+    let mut depth = 0i32;
+    for (i, c) in s[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[open + 1..open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +122,11 @@ mod tests {
     #[test]
     fn split_ignores_nested_commas() {
         assert_eq!(split_top_level("a(1,2),b", ','), vec!["a(1,2)", "b"]);
+    }
+
+    #[test]
+    fn balanced_parens_nested_and_unbalanced() {
+        assert_eq!(balanced_parens("x(a(b),c) d", 1), Some("a(b),c"));
+        assert_eq!(balanced_parens("x(a(b", 1), None);
     }
 }
