@@ -280,6 +280,7 @@ impl App {
                 self.edit(|d| group::ungroup(d, i));
                 self.canvas.selected.clear();
             }
+            Action::AutoLayout => self.edit(|d| crate::layout::auto_layout(d, g)),
             Action::NewGroup => {
                 let (x, y) = self.canvas.view_center;
                 let name = group::unique_group_name(&self.diagram);
@@ -407,6 +408,10 @@ impl eframe::App for App {
                     ui.separator();
                     if ui.button("Group selection…").clicked() {
                         actions.push(Action::GroupSelection);
+                        ui.close();
+                    }
+                    if ui.button("Auto layout").clicked() {
+                        actions.push(Action::AutoLayout);
                         ui.close();
                     }
                     if ui.button("New empty group").clicked() {

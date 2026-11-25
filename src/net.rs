@@ -115,6 +115,7 @@ pub fn design_to_diagram(d: &Design, grid: i32) -> Diagram {
         top_level_pins: d.top_ports.clone(),
     };
     arrange_grid(&mut diagram.instances, grid);
+    crate::layout::auto_layout(&mut diagram, grid);
     diagram
 }
 

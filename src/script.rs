@@ -284,6 +284,12 @@ const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     ("expand", "group", 1, 1, |s, a| {
         set_collapsed(s, &a[0], false)
     }),
+    ("autolayout", "", 0, 0, |s, _| {
+        s.edit(|d, g| {
+            crate::layout::auto_layout(d, g);
+            Ok(())
+        })
+    }),
     ("undo", "", 0, 0, undo),
     ("redo", "", 0, 0, redo),
 ];

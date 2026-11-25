@@ -17,4 +17,5 @@ pub enum Action {
     Ungroup(usize),
     GroupSelection,
     NewGroup,
+    AutoLayout,
 }
