@@ -5,9 +5,9 @@ use crate::geometry::Pt;
 use crate::group;
 use crate::history::History;
 use crate::model::{Diagram, Direction, Port};
-use crate::net::{Wire, design_to_diagram, route_all, top_pin_positions, wire_junctions};
-use crate::parser::parse_file;
+use crate::net::{Wire, route_all, top_pin_positions, wire_junctions};
 use crate::recent;
+use crate::script::{Script, Session};
 use crate::ui::{Action, inspector};
 use eframe::egui;
 use std::collections::HashMap;
@@ -45,6 +45,10 @@ pub struct App {
     prompt: Option<Prompt>,
     group_dialog: Option<GroupDialog>,
     recent: Vec<String>,
+    script: Script,
+    console_open: bool,
+    console_input: String,
+    console_log: Vec<String>,
 }
 
 impl Default for App {
@@ -63,6 +67,10 @@ impl Default for App {
             prompt: None,
             group_dialog: None,
             recent: recent::load(),
+            script: Script::new(DEFAULT_GRID),
+            console_open: false,
+            console_input: String::new(),
+            console_log: vec![],
         }
     }
 }
@@ -70,27 +78,16 @@ impl Default for App {
 impl App {
     /// Load a VHDL/SystemVerilog source (parsed and laid out) or a saved `.json` diagram.
     pub fn open_file(&mut self, path: &Path) {
-        let text = match std::fs::read(path) {
-            Ok(b) => String::from_utf8_lossy(&b).into_owned(), // Latin-1 comments are common in HDL
+        match crate::load::load(path, self.grid) {
+            Ok(l) => {
+                (self.diagram, self.signals, self.warnings) = (l.diagram, l.signals, l.warnings)
+            }
             Err(e) => {
-                self.warnings = vec![format!("cannot read {}: {e}", path.display())];
+                self.warnings = vec![e];
                 return;
             }
-        };
-        let name = path.to_string_lossy().into_owned();
-        if name.to_ascii_lowercase().ends_with(".json") {
-            match Diagram::from_json(&text) {
-                Ok(d) => (self.diagram, self.signals, self.warnings) = (d, HashMap::new(), vec![]),
-                Err(e) => {
-                    self.warnings = vec![format!("bad diagram file: {e}")];
-                    return;
-                }
-            }
-        } else {
-            let design = parse_file(&name, &text);
-            self.diagram = design_to_diagram(&design, self.grid);
-            (self.signals, self.warnings) = (design.signals, design.warnings);
         }
+        let name = path.to_string_lossy().into_owned();
         self.path = Some(path.to_path_buf());
         self.history.clear();
         self.drop_index_state();
@@ -99,6 +96,75 @@ impl App {
         recent::save(&self.recent);
         self.refresh();
         self.canvas.fit_requested = true;
+    }
+
+    /// Hand the diagram to the Tcl interpreter (it edits the same state and history as the GUI).
+    fn lend(&mut self) {
+        *self.script.session() = Session {
+            diagram: std::mem::take(&mut self.diagram),
+            signals: std::mem::take(&mut self.signals),
+            warnings: std::mem::take(&mut self.warnings),
+            grid: self.grid,
+            history: std::mem::take(&mut self.history),
+            opened: false,
+        };
+    }
+
+    /// Take the state back after the interpreter ran, then re-route.
+    pub fn reclaim(&mut self) {
+        let s = std::mem::take(self.script.session());
+        (self.diagram, self.signals, self.warnings, self.history) =
+            (s.diagram, s.signals, s.warnings, s.history);
+        self.drop_index_state();
+        if s.opened {
+            self.canvas.highlight = None;
+            self.canvas.fit_requested = true;
+        }
+        self.refresh();
+    }
+
+    /// Run a Tcl script on the current diagram; the result or error is returned as text.
+    pub fn run_script(&mut self, src: &str) -> Result<String, String> {
+        self.lend();
+        let r = self.script.eval(src);
+        self.reclaim();
+        r
+    }
+
+    fn console_ui(&mut self, ctx: &egui::Context) {
+        let mut run = None;
+        let mut open = self.console_open;
+        egui::Window::new("Tcl console")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for l in &self.console_log {
+                            ui.monospace(l);
+                        }
+                    });
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut self.console_input)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("instances, rename u1 cpu, group G u1 u2 …"),
+                );
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    run = Some(std::mem::take(&mut self.console_input));
+                    r.request_focus();
+                }
+            });
+        self.console_open = open;
+        if let Some(line) = run.filter(|l| !l.trim().is_empty()) {
+            self.console_log.push(format!("% {line}"));
+            match self.run_script(&line) {
+                Ok(out) if !out.is_empty() => self.console_log.push(out),
+                Ok(_) => {}
+                Err(e) => self.console_log.push(format!("error: {e}")),
+            }
+        }
     }
 
     fn save_as(&mut self) {
@@ -347,6 +413,7 @@ impl eframe::App for App {
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.canvas.show_grid, "Grid");
                     ui.checkbox(&mut self.canvas.show_signal_names, "Signal names");
+                    ui.checkbox(&mut self.console_open, "Tcl console");
                     for (label, g) in GRID_OPTIONS {
                         ui.radio_value(&mut self.grid, g, label);
                     }
@@ -477,6 +544,7 @@ impl eframe::App for App {
                 self.group_dialog = Some(gd);
             }
         }
+        self.console_ui(ui.ctx());
         if let Some(mut p) = self.prompt.take() {
             let (mut ok, mut cancel) = (false, false);
             egui::Window::new(p.title)
@@ -565,6 +633,18 @@ mod tests {
         assert!(a.warnings.iter().all(|w| !w.contains("cannot read")));
         assert_eq!(a.diagram.instances.len(), 0);
         assert!(!a.diagram.top_level_pins.is_empty() || a.warnings.is_empty());
+    }
+
+    #[test]
+    fn console_script_edits_share_the_guis_undo_history() {
+        let mut a = app_with(2);
+        assert_eq!(a.run_script("instances").unwrap(), "u0 u1");
+        a.run_script("rename u0 cpu").unwrap();
+        assert_eq!(a.diagram.instances[0].name, "cpu");
+        a.undo();
+        assert_eq!(a.diagram.instances[0].name, "u0");
+        assert!(a.run_script("rename zz y").is_err());
+        assert_eq!(a.diagram.instances.len(), 2); // state came back after the error
     }
 
     #[test]

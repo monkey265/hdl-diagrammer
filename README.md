@@ -32,3 +32,26 @@ No per-pin colours, wire context actions (reset route, delete connection, bus st
 dragging), resize handles, pin-to-pin wiring, dragging children inside an expanded group, font
 bold/italic, the paste-VHDL dialog and `--debug`. VHDL `open` keyword is kept as a net named `open`
 and not routed. Layouts for very large designs are not optimised.
+
+## Tcl scripting
+
+Scripts run in an embedded [molt](https://crates.io/crates/molt) interpreter (a Tcl subset: `proc`, `foreach`,
+`if`, `expr`, lists, `catch`, `puts`; no `namespace`/`package`). Blocks are addressed by instance name.
+
+```
+hdl-diagrammer --script run.tcl [file.vhd]        # headless, exit code 1 on a Tcl error
+hdl-diagrammer file.vhd --script run.tcl --gui    # run, then open the window
+```
+The same commands run in View > Tcl console, sharing the GUI's undo history.
+
+| command | effect |
+|---|---|
+| `open f` / `save f.json` / `export f.svg` | load HDL or JSON / write JSON / write a picture (gates are plain boxes) |
+| `instances`, `ports i`, `info i`, `nets`, `warnings` | queries, returned as Tcl lists |
+| `rename i new`, `move i x y`, `color i #hex\|""`, `size i w h\|auto` | edit a block |
+| `lock i`, `unlock i`, `hide i`, `show i` | block state |
+| `group g i…`, `ungroup g`, `collapse g`, `expand g` | groups |
+| `undo`, `redo` | one step per command |
+
+Errors are ordinary Tcl errors (catchable with `catch`) and leave the diagram unchanged.
+Children of an expanded group cannot be addressed by name yet; `puts` prints to the terminal, not the console panel.

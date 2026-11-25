@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.35.0"
+molt = "0.3.1"
 regex = "1.13.2"
 rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }

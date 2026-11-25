@@ -7,24 +7,64 @@ mod geometry;
 mod group;
 mod history;
 mod layout;
+mod load;
 mod model;
 mod net;
 mod parser;
 mod recent;
 mod router;
+mod script;
+mod svg;
 mod ui;
 
+const USAGE: &str = "usage: hdl-diagrammer [file.vhd|.sv|.json] [--script file.tcl [--gui]]
+  --script  run a Tcl script (headless unless --gui is also given)";
+
 fn main() -> eframe::Result {
-    let arg = std::env::args().nth(1);
+    let (mut file, mut script, mut gui) = (None, None, false);
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--script" => script = args.next(),
+            "--gui" => gui = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            _ if file.is_none() && !a.starts_with("--") => file = Some(a),
+            _ => {
+                eprintln!("unexpected argument '{a}'\n{USAGE}");
+                std::process::exit(2);
+            }
+        }
+    }
+    let mut app = app::App::default();
+    if let Some(p) = &file {
+        app.open_file(std::path::Path::new(p));
+    }
+    if let Some(path) = script {
+        app.warnings.iter().for_each(|w| eprintln!("warning: {w}"));
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("cannot read {path}: {e}");
+            std::process::exit(2);
+        });
+        match app.run_script(&src) {
+            Ok(out) if !out.is_empty() => println!("{out}"),
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{path}: {e}");
+                std::process::exit(1);
+            }
+        }
+        if !gui {
+            return Ok(());
+        }
+    }
     eframe::run_native(
         "hdl-diagrammer",
         eframe::NativeOptions::default(),
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(eframe::egui::Visuals::light());
-            let mut app = app::App::default();
-            if let Some(p) = arg {
-                app.open_file(std::path::Path::new(&p));
-            }
             Ok(Box::new(app))
         }),
     )
