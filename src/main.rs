@@ -1,6 +1,9 @@
 mod app;
 mod canvas;
 mod config;
+mod edit;
+mod history;
+mod recent;
 mod geometry;
 mod layout;
 mod model;
