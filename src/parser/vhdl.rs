@@ -5,12 +5,12 @@ use regex::Regex;
 use std::collections::HashMap;
 
 /// Collapse runs of whitespace so multi-line expressions compare and print cleanly.
-fn squash(s: &str) -> String {
+pub(super) fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Token-based fallback when the instantiated entity is not in the file.
-fn guess_direction(port: &str) -> Direction {
+pub(super) fn guess_direction(port: &str) -> Direction {
     let lower = port.to_ascii_lowercase();
     let toks: Vec<&str> = lower.split('_').collect();
     let has = |set: &[&str]| toks.iter().any(|t| set.contains(t));

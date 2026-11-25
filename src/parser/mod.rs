@@ -1,4 +1,5 @@
 pub mod lex;
+pub mod sv;
 pub mod vhdl;
 
 use crate::model::{Instance, Port};
@@ -18,6 +19,7 @@ pub fn parse_file(path_or_ext: &str, text: &str) -> Design {
     let ext = path_or_ext.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "vhd" | "vhdl" => vhdl::parse_vhdl(text),
+        "sv" | "v" | "svh" => sv::parse_sv(text),
         _ => Design { warnings: vec![format!("unsupported file type '.{ext}'")], ..Default::default() },
     }
 }
