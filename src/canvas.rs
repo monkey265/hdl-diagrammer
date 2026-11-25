@@ -96,6 +96,12 @@ fn signal_color(sig: &str, signals: &HashMap<String, String>) -> Color32 {
 }
 
 impl Canvas {
+    /// Drop selection and context-menu target (they hold instance indices).
+    pub fn forget_indices(&mut self) {
+        self.selected.clear();
+        self.target = None;
+    }
+
     fn world_bounds(scene: &View) -> Option<Rect> {
         let mut pts: Vec<Pos2> = scene
             .pin_pos

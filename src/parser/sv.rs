@@ -197,7 +197,20 @@ fn parse_body(src: &str, tk: &[(usize, usize)], (bs, be): (usize, usize), m: &mu
         }
         let prev = if k > bs { txt(k - 1) } else { ";" };
         let labelled = k >= bs + 3 && txt(k - 2) == ":" && matches!(txt(k - 3), "begin" | "end");
-        let start = matches!(prev, ";" | "begin" | "end" | "generate" | "endgenerate") || labelled;
+        // `)` / `else` cover bodiless `if (..) sub u(..);`; the end-keywords cover code after a block with no `;`
+        let bare = matches!(prev, ")" | "else");
+        let start = bare
+            || labelled
+            || matches!(
+                prev,
+                ";" | "begin"
+                    | "end"
+                    | "generate"
+                    | "endgenerate"
+                    | "endfunction"
+                    | "endtask"
+                    | "endcase"
+            );
         if !(start && is_ident(w) && !KEYWORDS.contains(&w)) {
             k += 1;
             continue;
@@ -232,7 +245,7 @@ fn parse_body(src: &str, tk: &[(usize, usize)], (bs, be): (usize, usize), m: &mu
             }
             let (inner, nq) = paren(src, tk, q);
             let Some(inner) = inner else { break };
-            if in_gen > 0 || cond.iter().any(|&c| c) {
+            if in_gen > 0 || bare || cond.iter().any(|&c| c) {
                 let msg = format!(
                     "instance {label} is inside a generate/conditional block; listed once, not expanded"
                 );
@@ -574,5 +587,25 @@ mod tests {
     fn garbage_does_not_panic() {
         let d = parse_sv("module \u{0} ( ( ( endmodule module");
         assert!(!d.warnings.is_empty());
+    }
+
+    #[test]
+    fn instances_after_unusual_statement_ends_are_kept() {
+        let cases = [
+            "function int f(int a); return a; endfunction\n sub u1 (.a(x));",
+            "task t; x = 1; endtask\n sub u1 (.a(x));",
+            "always_comb case (s) 1: y = 0; default: y = 1; endcase\n sub u1 (.a(x));",
+            "if (P) sub u1 (.a(x));",
+            "for (i = 0; i < 2; i++) sub u1 (.a(x));",
+        ];
+        for c in cases {
+            let src =
+                format!("module top (input x); {c} endmodule\nmodule sub (input a); endmodule");
+            let d = parse_sv(&src);
+            assert!(
+                d.instances.iter().any(|i| i.name == "u1"),
+                "dropped instance after: {c}"
+            );
+        }
     }
 }

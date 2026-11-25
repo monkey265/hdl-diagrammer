@@ -99,7 +99,12 @@ pub fn parse_vhdl(text: &str) -> Design {
     for m in pm_re.find_iter(&src) {
         let start = src[..m.start()].rfind(';').map_or(0, |i| i + 1);
         let header = &src[start..m.start()];
-        let Some(h) = head_re.captures(header) else {
+        // the instance label is the last `label :` before `port map`; earlier ones are generate/block labels
+        let mut heads = head_re.captures_iter(header);
+        let first_head = heads.next();
+        let last_head = heads.last();
+        let in_generate = last_head.is_some();
+        let Some(h) = last_head.or(first_head) else {
             d.warnings
                 .push("port map without a recognisable instance label skipped".into());
             continue;
@@ -113,6 +118,11 @@ pub fn parse_vhdl(text: &str) -> Design {
                 .push(format!("unbalanced port map in instance {label}"));
             continue;
         };
+        if in_generate {
+            d.warnings.push(format!(
+                "instance {label} is inside a generate/block statement; listed once, not expanded"
+            ));
+        }
         let known = ent_ports.get(&ent.to_ascii_lowercase());
         let mut ports = Vec::new();
         let mut positional = false;
@@ -247,5 +257,25 @@ end architecture;";
     fn no_entity_warns() {
         let d = parse_vhdl("library ieee; use ieee.std_logic_1164.all;");
         assert!(d.warnings.iter().any(|w| w.contains("no entity")));
+    }
+
+    #[test]
+    fn generate_label_is_not_the_instance() {
+        let src = "entity t is end; architecture a of t is begin
+ gen_u : for i in 0 to 3 generate
+   u : entity work.sub port map (a => x);
+ end generate;
+ g2 : if true generate
+   v : sub port map (a => y);
+ end generate;
+end;";
+        let d = parse_vhdl(src);
+        let got: Vec<_> = d
+            .instances
+            .iter()
+            .map(|i| (i.name.as_str(), i.entity.as_str()))
+            .collect();
+        assert_eq!(got, vec![("u", "sub"), ("v", "sub")]);
+        assert!(d.warnings.iter().any(|w| w.contains("generate")));
     }
 }

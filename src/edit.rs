@@ -2,16 +2,24 @@ use crate::geometry::snap;
 use crate::layout::port_pos;
 use crate::model::Diagram;
 
+fn shift(i: &mut crate::model::Instance, dx: i32, dy: i32) {
+    i.x += dx;
+    i.y += dy;
+    i.children.iter_mut().for_each(|c| shift(c, dx, dy));
+}
+
 /// Move a block to (x, y) snapped to `grid`; locked blocks do not move.
 pub fn move_block(d: &mut Diagram, idx: usize, x: i32, y: i32, grid: i32) {
-    fn shift(i: &mut crate::model::Instance, dx: i32, dy: i32) {
-        i.x += dx;
-        i.y += dy;
-        i.children.iter_mut().for_each(|c| shift(c, dx, dy));
-    }
     if let Some(i) = d.instances.get_mut(idx).filter(|i| !i.locked) {
         let (dx, dy) = (snap(x, grid) - i.x, snap(y, grid) - i.y);
         shift(i, dx, dy); // a group carries its children (absolute coordinates)
+    }
+}
+
+/// Recompute a block's size after its ports or custom size changed.
+pub fn refit(d: &mut Diagram, idx: usize, grid: i32) {
+    if let Some(i) = d.instances.get_mut(idx) {
+        (i.width, i.height) = crate::layout::block_size(i, grid);
     }
 }
 
@@ -21,7 +29,7 @@ fn overlaps(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
 
 /// If block `idx` overlaps another visible block, move it to the nearest free grid spot.
 pub fn resolve_collision(d: &mut Diagram, idx: usize, grid: i32) {
-    let Some(me) = d.instances.get(idx) else {
+    let Some(me) = d.instances.get(idx).filter(|i| !i.locked) else {
         return;
     };
     let others: Vec<_> = d
@@ -49,8 +57,7 @@ pub fn resolve_collision(d: &mut Diagram, idx: usize, grid: i32) {
         .into_iter()
         .find(|&(dx, dy)| free(x0 + dx * grid, y0 + dy * grid))
     {
-        let m = &mut d.instances[idx];
-        (m.x, m.y) = (x0 + dx * grid, y0 + dy * grid);
+        shift(&mut d.instances[idx], dx * grid, dy * grid); // children follow a group
     }
 }
 
@@ -116,6 +123,7 @@ pub fn set_size(d: &mut Diagram, idx: usize, size: Option<(i32, i32)>, grid: i32
     };
     let up = |v: i32| (v.max(50) + grid - 1).div_euclid(grid) * grid;
     (i.custom_width, i.custom_height) = size.map_or((0, 0), |(w, h)| (up(w), up(h)));
+    refit(d, idx, grid);
 }
 
 /// Index of the wire whose polyline passes within `tol` world units of the point.
@@ -273,5 +281,43 @@ mod tests {
             (d.instances[g].children[1].x, d.instances[g].children[1].y),
             (cx + 100, cy + 60)
         );
+    }
+
+    #[test]
+    fn collision_push_carries_group_children() {
+        let mut d = dia(vec![blk(0, 0), blk(200, 0), blk(600, 0)]);
+        let g = crate::group::create_group(&mut d, "G", &[0, 1], vec![]);
+        let o = d.instances.iter().position(|i| !i.is_group).unwrap();
+        let (gx, gy) = (d.instances[g].x, d.instances[g].y);
+        (d.instances[o].x, d.instances[o].y) = (gx + 20, gy + 20); // lands on the group
+        resolve_collision(&mut d, g, 20);
+        let gr = &d.instances[g];
+        assert!((gr.x, gr.y) != (gx, gy));
+        for c in &gr.children {
+            assert!(c.x >= gr.x && c.y >= gr.y, "child left behind by push-out");
+        }
+    }
+
+    #[test]
+    fn collision_never_moves_locked_block() {
+        let mut d = dia(vec![blk(100, 100), blk(100, 100)]);
+        toggle_lock(&mut d, 1);
+        resolve_collision(&mut d, 1, 20);
+        assert_eq!((d.instances[1].x, d.instances[1].y), (100, 100));
+    }
+
+    #[test]
+    fn set_size_and_port_edits_resize_block() {
+        let mut d = dia(vec![blk(0, 0)]);
+        set_size(&mut d, 0, Some((333, 10)), 20);
+        assert_eq!((d.instances[0].width, d.instances[0].height), (340, 60));
+        set_size(&mut d, 0, None, 20);
+        let auto = (d.instances[0].width, d.instances[0].height);
+        for _ in 0..8 {
+            let p = d.instances[0].ports[0].clone();
+            d.instances[0].ports.push(p);
+        }
+        refit(&mut d, 0, 20);
+        assert!(d.instances[0].height > auto.1);
     }
 }
