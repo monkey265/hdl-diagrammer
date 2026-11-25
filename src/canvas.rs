@@ -61,7 +61,7 @@ impl Canvas {
             pts.push(Pos2::new(i.x as f32, i.y as f32));
             pts.push(Pos2::new((i.x + i.width) as f32, (i.y + i.height) as f32));
         }
-        (!pts.is_empty()).then(|| Rect::from_points(&pts).expand2(Vec2::new(140.0, 40.0)) // room for top-pin labels)
+        (!pts.is_empty()).then(|| Rect::from_points(&pts).expand2(Vec2::new(140.0, 40.0)))
     }
 
     fn fit(&mut self, view: Rect, scene: &Scene) {
