@@ -2,7 +2,8 @@ use crate::config::*;
 use crate::geometry::Pt;
 use crate::layout::port_pos;
 use crate::edit;
-use crate::model::{Diagram, Direction};
+use crate::gates::gate_kind;
+use crate::model::{Diagram, Direction, Instance};
 use crate::net::Wire;
 use crate::ui::Action;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -45,6 +46,8 @@ pub struct Canvas {
     pub fit_requested: bool,
     pub selected: Vec<usize>,
     pub highlight: Option<String>,
+    /// World coordinates of the middle of the view (where new groups appear).
+    pub view_center: (i32, i32),
     drag: Option<Drag>,
     panning: bool,
     target: Option<Target>,
@@ -54,7 +57,7 @@ impl Default for Canvas {
     fn default() -> Self {
         Canvas {
             zoom: 1.0, pan: Vec2::ZERO, show_grid: true, show_signal_names: true, fit_requested: true,
-            selected: vec![], highlight: None, drag: None, panning: false, target: None,
+            selected: vec![], highlight: None, view_center: (100, 100), drag: None, panning: false, target: None,
         }
     }
 }
@@ -124,6 +127,8 @@ impl Canvas {
             let v = (p - view.min - pan) / zoom;
             (v.x, v.y)
         };
+        let c = to_w(view.center(), self.pan, self.zoom);
+        self.view_center = (c.0 as i32, c.1 as i32);
         let shift = ui.input(|i| i.modifiers.shift);
         let ptr_world = resp.interact_pointer_pos().map(|p| to_w(p, self.pan, self.zoom));
 
@@ -232,12 +237,30 @@ impl Canvas {
                     out.push(Outcome::Do(Action::ResetPorts(i)));
                     ui.close();
                 }
+                if inst.is_group {
+                    if ui.button(if inst.collapsed { "Expand" } else { "Collapse" }).clicked() {
+                        out.push(Outcome::Do(Action::ToggleCollapse(i)));
+                        ui.close();
+                    }
+                    if ui.button("Ungroup").clicked() {
+                        out.push(Outcome::Do(Action::Ungroup(i)));
+                        ui.close();
+                    }
+                }
                 if ui.button("Delete").clicked() {
                     out.push(Outcome::Do(Action::SetVisible(i, false)));
                     ui.close();
                 }
             }
             None => {
+                if ui.button("Group selection…").clicked() {
+                    out.push(Outcome::Do(Action::GroupSelection));
+                    ui.close();
+                }
+                if ui.button("New empty group").clicked() {
+                    out.push(Outcome::Do(Action::NewGroup));
+                    ui.close();
+                }
                 if ui.button("Zoom to fit").clicked() {
                     self.fit_requested = true;
                     ui.close();
@@ -286,29 +309,8 @@ impl Canvas {
             painter.circle_filled(to_s(*p), 3.0 * z, signal_color(sig, scene.signals));
         }
 
-        for (ii, inst) in scene.diagram.instances.iter().enumerate().filter(|(_, i)| i.visible) {
-            let r = Rect::from_min_max(to_s((inst.x, inst.y)), to_s((inst.x + inst.width, inst.y + inst.height)));
-            let fill = inst.color_override.as_deref().and_then(parse_hex).unwrap_or(rgb(INSTANCE_BG));
-            painter.rect_filled(r, 4.0 * z, fill);
-            let sel = self.selected.contains(&ii);
-            painter.rect_stroke(r, 4.0 * z, Stroke::new(if sel { 3.0 } else { 1.5 }, if sel { rgb(HIGHLIGHT) } else { Color32::from_gray(60) }), StrokeKind::Inside);
-            if inst.locked && text_ok(8.0) {
-                painter.text(r.right_top() + Vec2::new(-4.0 * z, 3.0 * z), Align2::RIGHT_TOP, "locked", font(7.0), Color32::GRAY);
-            }
-            if text_ok(inst.font_size as f32) {
-                painter.text(r.center_top() + Vec2::new(0.0, 6.0 * z), Align2::CENTER_TOP, &inst.name, font(inst.font_size as f32), Color32::BLACK);
-                painter.text(r.center_top() + Vec2::new(0.0, (inst.font_size as f32 + 10.0) * z), Align2::CENTER_TOP, format!("({})", inst.entity), font(8.0), Color32::DARK_GRAY);
-            }
-            for (pi, p) in inst.ports.iter().enumerate() {
-                let pos = to_s(port_pos(inst, pi));
-                let left = p.direction == Direction::In;
-                let c = if left { rgb(INPUT_PORT) } else { rgb(OUTPUT_PORT) };
-                painter.circle_filled(pos, 3.5 * z, c);
-                if text_ok(p.font_size as f32) {
-                    let (anchor, dx) = if left { (Align2::LEFT_CENTER, 6.0) } else { (Align2::RIGHT_CENTER, -6.0) };
-                    painter.text(pos + Vec2::new(dx * z, 0.0), anchor, &p.name, font(p.font_size as f32), Color32::BLACK);
-                }
-            }
+        for (ii, inst) in scene.diagram.instances.iter().enumerate() {
+            self.draw_instance(&painter, origin, inst, self.selected.contains(&ii));
         }
 
         for (pin, pos) in scene.diagram.top_level_pins.iter().zip(scene.pin_pos) {
@@ -321,6 +323,74 @@ impl Canvas {
             }
         }
         out
+    }
+
+    fn draw_instance(&self, painter: &egui::Painter, origin: Pos2, inst: &Instance, selected: bool) {
+        if !inst.visible {
+            return;
+        }
+        let z = self.zoom;
+        let to_s = |x: i32, y: i32| origin + Vec2::new(x as f32, y as f32) * z;
+        let font = |pt: f32| FontId::proportional((pt * z).max(1.0));
+        let text_ok = |pt: f32| pt * z >= 5.0;
+        let r = Rect::from_min_max(to_s(inst.x, inst.y), to_s(inst.x + inst.width, inst.y + inst.height));
+        let line = if selected { rgb(HIGHLIGHT) } else if inst.locked { Color32::from_rgb(0xD3, 0x2F, 0x2F) } else { Color32::from_gray(60) };
+        let stroke = Stroke::new(if selected { 3.0 } else { 1.5 }, line);
+        let user_fill = inst.color_override.as_deref().and_then(parse_hex);
+        let expanded_group = inst.is_group && !inst.collapsed;
+
+        if let Some(kind) = gate_kind(&inst.entity) {
+            let fill = user_fill.unwrap_or(if selected { Color32::from_rgb(0xFF, 0xF5, 0x9D) } else { Color32::WHITE });
+            let body_w = inst.width as f32 - if kind.bubble() { 10.0 } else { 0.0 };
+            let map = |&(px, py): &(f32, f32)| origin + Vec2::new(inst.x as f32 + px * body_w, inst.y as f32 + py * inst.height as f32) * z;
+            let shape = kind.shape();
+            let pts: Vec<Pos2> = shape.body.iter().map(map).collect();
+            painter.add(egui::Shape::convex_polygon(pts.clone(), fill, egui::Stroke::NONE));
+            painter.add(egui::Shape::closed_line(pts, stroke));
+            if let Some(extra) = &shape.extra {
+                painter.add(egui::Shape::line(extra.iter().map(map).collect(), stroke));
+            }
+            if kind.bubble() {
+                let c = to_s(inst.x + inst.width - 5, inst.y + inst.height / 2);
+                painter.circle(c, 5.0 * z, Color32::WHITE, stroke);
+            }
+            if text_ok(8.0) {
+                painter.text(r.center_bottom() + Vec2::new(0.0, 2.0 * z), Align2::CENTER_TOP, &inst.name, font(8.0), Color32::BLACK);
+            }
+        } else {
+            let group_color = Color32::from_rgb(0xE1, 0xBE, 0xE7);
+            let fill = user_fill.unwrap_or(if inst.is_group { group_color } else { rgb(INSTANCE_BG) });
+            if expanded_group {
+                let frame = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                painter.extend(egui::Shape::dashed_line(&frame, Stroke::new(1.0, Color32::from_gray(90)), 6.0 * z, 4.0 * z));
+                let header = Rect::from_min_size(r.min, Vec2::new(r.width(), 35.0 * z));
+                painter.rect_filled(header, 2.0 * z, fill);
+                painter.rect_stroke(header, 2.0 * z, stroke, StrokeKind::Inside);
+            } else {
+                painter.rect_filled(r, 4.0 * z, fill);
+                painter.rect_stroke(r, 4.0 * z, stroke, StrokeKind::Inside);
+            }
+            if inst.locked && text_ok(8.0) {
+                painter.text(r.right_top() + Vec2::new(-4.0 * z, 3.0 * z), Align2::RIGHT_TOP, "locked", font(7.0), Color32::from_rgb(0xD3, 0x2F, 0x2F));
+            }
+            if text_ok(inst.font_size as f32) {
+                painter.text(r.center_top() + Vec2::new(0.0, 6.0 * z), Align2::CENTER_TOP, &inst.name, font(inst.font_size as f32), Color32::BLACK);
+                let (sub, col) = if inst.is_group { ("(Group)".to_string(), Color32::BLUE) } else { (format!("({})", inst.entity), Color32::DARK_GRAY) };
+                painter.text(r.center_top() + Vec2::new(0.0, (inst.font_size as f32 + 10.0) * z), Align2::CENTER_TOP, sub, font(8.0), col);
+            }
+        }
+        for (pi, p) in inst.ports.iter().enumerate() {
+            let pos = to_s(port_pos(inst, pi).0, port_pos(inst, pi).1);
+            let left = if gate_kind(&inst.entity).is_some() { p.direction != Direction::Out } else { p.direction == Direction::In };
+            painter.circle_filled(pos, 3.5 * z, if left { rgb(INPUT_PORT) } else { rgb(OUTPUT_PORT) });
+            if gate_kind(&inst.entity).is_none() && text_ok(p.font_size as f32) {
+                let (anchor, dx) = if left { (Align2::LEFT_CENTER, 6.0) } else { (Align2::RIGHT_CENTER, -6.0) };
+                painter.text(pos + Vec2::new(dx * z, 0.0), anchor, &p.name, font(p.font_size as f32), Color32::BLACK);
+            }
+        }
+        if expanded_group {
+            inst.children.iter().for_each(|c| self.draw_instance(painter, origin, c, false));
+        }
     }
 }
 

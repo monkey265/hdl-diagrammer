@@ -1,5 +1,6 @@
 use crate::config::*;
-use crate::geometry::Pt;
+use crate::gates::{gate_kind, GateKind};
+use crate::geometry::{snap, Pt};
 use crate::model::{Direction, Instance};
 use std::collections::BTreeMap;
 
@@ -55,9 +56,20 @@ pub fn arrange_grid(instances: &mut [Instance], grid: i32) {
     }
 }
 
-/// Absolute position of `inst.ports[port_idx]` on a standard (non-gate) block.
+/// Absolute position of `inst.ports[port_idx]`: ANSI gate symbols and standard blocks differ.
 pub fn port_pos(inst: &Instance, port_idx: usize) -> Pt {
     let Some(port) = inst.ports.get(port_idx) else { return (inst.x, inst.y) };
+    if let Some(kind) = gate_kind(&inst.entity) {
+        let center = snap(inst.y + inst.height / 2, 20);
+        if port.direction == Direction::Out {
+            return (inst.x + inst.width, center);
+        }
+        let n_in = inst.ports.iter().filter(|p| p.direction != Direction::Out).count() as i32;
+        let idx = inst.ports[..port_idx].iter().filter(|p| p.direction != Direction::Out).count() as i32;
+        let start = snap(center - (n_in - 1) * 20 / 2, 20);
+        let dx = if matches!(kind, GateKind::Xor | GateKind::Xnor) { 10 } else { 0 };
+        return (inst.x + dx, start + idx * 20);
+    }
     let left = port.direction == Direction::In;
     let idx = inst.ports[..port_idx].iter().filter(|p| (p.direction == Direction::In) == left).count() as i32;
     (if left { inst.x } else { inst.x + inst.width }, inst.y + 40 + idx * PORT_HEIGHT)
@@ -144,5 +156,19 @@ mod tests {
         for k in 0..3 {
             assert_eq!(port_pos(&i, k).1 % 20, 0);
         }
+    }
+
+    #[test]
+    fn gate_port_snaps_to_grid() {
+        let mut g = inst("U1", vec![Port::new("A", Direction::In, ""), Port::new("B", Direction::In, ""), Port::new("Z", Direction::Out, "")]);
+        g.entity = "AND2".into();
+        (g.x, g.y, g.width, g.height) = (100, 100, 60, 50);
+        for k in 0..3 {
+            assert_eq!(port_pos(&g, k).1 % 20, 0, "port {k}");
+        }
+        assert_eq!(port_pos(&g, 0).0, 100);
+        assert_eq!(port_pos(&g, 2).0, 160);
+        g.entity = "XOR".into();
+        assert_eq!(port_pos(&g, 0).0, 110); // XOR inputs sit on the curved edge
     }
 }

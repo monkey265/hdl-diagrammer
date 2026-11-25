@@ -1,5 +1,6 @@
 use crate::config::GRID_STEP;
 use crate::geometry::{junctions, mark_segment, snap, Pt, Seg};
+use crate::group::active_instances;
 use crate::layout::{arrange_grid, port_pos};
 use crate::model::{Diagram, Direction};
 use crate::parser::Design;
@@ -70,7 +71,8 @@ pub fn route_all(d: &Diagram) -> Vec<Wire> {
     for (k, p) in d.top_level_pins.iter().enumerate() {
         add(&p.signal, Ep::Top(k), pins[k], p.direction == Direction::In);
     }
-    for (ii, inst) in d.instances.iter().enumerate().filter(|(_, i)| i.visible) {
+    let active = active_instances(d);
+    for (ii, inst) in active.iter().enumerate() {
         for (pi, p) in inst.ports.iter().enumerate() {
             add(&p.signal, Ep::Inst { inst: ii, port: pi }, port_pos(inst, pi), p.direction != Direction::In);
         }
@@ -88,7 +90,8 @@ pub fn route_all(d: &Diagram) -> Vec<Wire> {
     let floor = |v: i32| v.div_euclid(GRID_STEP) * GRID_STEP;
     let bounds: Bounds = (floor(bx0 - 200), floor(bx1 + 200), floor(by0 - 150), floor(by1 + 150));
     let router = Router { grid_step: GRID_STEP };
-    let blocks: Vec<_> = d.instances.iter().filter(|i| i.visible).map(|i| (i.x, i.y, i.width, i.height)).collect();
+    // an expanded group is only a frame: wires may cross it to reach its children
+    let blocks: Vec<_> = active.iter().filter(|i| !(i.is_group && !i.collapsed)).map(|i| (i.x, i.y, i.width, i.height)).collect();
     let occ = router.build_occupancy(&blocks, bounds, 30);
     let mut wire_occ = WireOcc::new();
     let mut wires = Vec::new();
@@ -115,7 +118,7 @@ pub fn wire_junctions(d: &Diagram, wires: &[Wire]) -> Vec<(String, Pt)> {
         }
     }
     let mut ports: HashSet<Pt> = top_pin_positions(d).into_iter().collect();
-    for inst in d.instances.iter().filter(|i| i.visible) {
+    for inst in active_instances(d) {
         ports.extend((0..inst.ports.len()).map(|k| port_pos(inst, k)));
     }
     junctions(&by_sig, &ports, GRID_STEP)
@@ -191,5 +194,30 @@ mod tests {
         let w = route_all(&design_to_diagram(&des, 20));
         assert!(w.len() > 20);
         assert!(w.iter().flat_map(|w| &w.segments).all(|((x1, y1), (x2, y2))| x1 == x2 || y1 == y2));
+    }
+
+    fn grouped(collapsed: bool) -> Diagram {
+        let mk = |n: &str, x: i32, dir: Direction| {
+            let mut i = Instance::new(n, "E", vec![Port::new("p", dir, "n")]);
+            (i.x, i.y, i.width, i.height) = (x, 0, 100, 80);
+            i
+        };
+        let mut d = Diagram { instances: vec![mk("a", 0, Direction::Out), mk("b", 300, Direction::In)], top_level_pins: vec![] };
+        crate::group::create_group(&mut d, "G", &[0, 1], vec![]);
+        if collapsed {
+            crate::group::toggle_collapse(&mut d, 0, 20);
+        }
+        d
+    }
+
+    #[test]
+    fn expanded_group_routes_to_children() {
+        let w = route_all(&grouped(false));
+        assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn collapsed_group_hides_children_nets() {
+        assert!(route_all(&grouped(true)).is_empty());
     }
 }

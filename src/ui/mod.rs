@@ -13,4 +13,8 @@ pub enum Action {
     DeletePort(usize, usize),
     Highlight(Option<String>),
     Select(usize),
+    ToggleCollapse(usize),
+    Ungroup(usize),
+    GroupSelection,
+    NewGroup,
 }

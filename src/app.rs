@@ -2,8 +2,9 @@ use crate::canvas::{Canvas, Outcome, View};
 use crate::config::*;
 use crate::edit;
 use crate::geometry::Pt;
+use crate::group;
 use crate::history::History;
-use crate::model::Diagram;
+use crate::model::{Diagram, Direction, Port};
 use crate::net::{design_to_diagram, route_all, top_pin_positions, wire_junctions, Wire};
 use crate::parser::parse_file;
 use crate::recent;
@@ -24,6 +25,12 @@ struct Prompt {
     text: String,
 }
 
+struct GroupDialog {
+    name: String,
+    members: Vec<(usize, bool)>,
+    ports: Vec<Port>,
+}
+
 pub struct App {
     pub diagram: Diagram,
     pub signals: HashMap<String, String>,
@@ -36,6 +43,7 @@ pub struct App {
     grid: i32,
     history: History<Diagram>,
     prompt: Option<Prompt>,
+    group_dialog: Option<GroupDialog>,
     recent: Vec<String>,
 }
 
@@ -53,6 +61,7 @@ impl Default for App {
             grid: DEFAULT_GRID,
             history: History::default(),
             prompt: None,
+            group_dialog: None,
             recent: recent::load(),
         }
     }
@@ -129,6 +138,7 @@ impl App {
     }
 
     fn apply(&mut self, a: Action) {
+        let g = self.grid;
         match a {
             Action::RenameInstance(i) => {
                 let text = self.diagram.instances[i].name.clone();
@@ -150,6 +160,28 @@ impl App {
             Action::DeletePort(i, p) => self.edit(|d| edit::delete_port(d, i, p)),
             Action::Highlight(s) => self.canvas.highlight = s,
             Action::Select(i) => self.canvas.selected = vec![i],
+            Action::ToggleCollapse(i) => self.edit(|d| group::toggle_collapse(d, i, g)),
+            Action::Ungroup(i) => {
+                self.edit(|d| group::ungroup(d, i));
+                self.canvas.selected.clear();
+            }
+            Action::NewGroup => {
+                let (x, y) = self.canvas.view_center;
+                let name = group::unique_group_name(&self.diagram);
+                self.edit(|d| drop(group::create_empty_group(d, &name, x - 100, y - 100)));
+            }
+            Action::GroupSelection => {
+                if self.canvas.selected.is_empty() {
+                    self.warnings = vec!["select one or more blocks first (click, shift-click)".into()];
+                } else {
+                    let sel = &self.canvas.selected;
+                    self.group_dialog = Some(GroupDialog {
+                        name: group::unique_group_name(&self.diagram),
+                        members: self.diagram.instances.iter().enumerate().filter(|(_, i)| i.visible).map(|(k, _)| (k, sel.contains(&k))).collect(),
+                        ports: group::suggest_ports(&self.diagram, sel),
+                    });
+                }
+            }
         }
     }
 
@@ -218,6 +250,19 @@ impl eframe::App for App {
                         self.redo();
                         ui.close();
                     }
+                    ui.separator();
+                    if ui.button("Group selection…").clicked() {
+                        actions.push(Action::GroupSelection);
+                        ui.close();
+                    }
+                    if ui.button("New empty group").clicked() {
+                        actions.push(Action::NewGroup);
+                        ui.close();
+                    }
+                    if ui.button("Ungroup selection").clicked() {
+                        actions.extend(self.canvas.selected.iter().rev().map(|&i| Action::Ungroup(i)));
+                        ui.close();
+                    }
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.canvas.show_grid, "Grid");
@@ -270,6 +315,57 @@ impl eframe::App for App {
         }
         for a in actions {
             self.apply(a);
+        }
+        if let Some(mut gd) = self.group_dialog.take() {
+            let (mut ok, mut cancel) = (false, false);
+            egui::Window::new("Create group").collapsible(false).show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    ui.text_edit_singleline(&mut gd.name);
+                });
+                ui.separator();
+                ui.label("Blocks");
+                egui::ScrollArea::vertical().id_salt("gd_blocks").max_height(140.0).show(ui, |ui| {
+                    for (k, on) in gd.members.iter_mut() {
+                        ui.checkbox(on, &self.diagram.instances[*k].name);
+                    }
+                });
+                ui.separator();
+                ui.label("Ports");
+                let mut remove = None;
+                for (k, p) in gd.ports.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(90.0));
+                        egui::ComboBox::from_id_salt(("gd_dir", k)).selected_text(format!("{:?}", p.direction)).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut p.direction, Direction::In, "In");
+                            ui.selectable_value(&mut p.direction, Direction::Out, "Out");
+                            ui.selectable_value(&mut p.direction, Direction::InOut, "InOut");
+                        });
+                        ui.add(egui::TextEdit::singleline(&mut p.signal).desired_width(90.0));
+                        if ui.small_button("✕").clicked() {
+                            remove = Some(k);
+                        }
+                    });
+                }
+                if let Some(k) = remove {
+                    gd.ports.remove(k);
+                }
+                if ui.button("Add port").clicked() {
+                    gd.ports.push(Port::new("port", Direction::InOut, ""));
+                }
+                ui.horizontal(|ui| {
+                    ok = ui.button("OK").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+            if ok {
+                let members: Vec<usize> = gd.members.iter().filter(|m| m.1).map(|m| m.0).collect();
+                let name = if gd.name.trim().is_empty() { group::unique_group_name(&self.diagram) } else { gd.name.trim().to_string() };
+                self.edit(|d| drop(group::create_group(d, &name, &members, gd.ports)));
+                self.canvas.selected.clear();
+            } else if !cancel {
+                self.group_dialog = Some(gd);
+            }
         }
         if let Some(mut p) = self.prompt.take() {
             let (mut ok, mut cancel) = (false, false);

@@ -4,8 +4,14 @@ use crate::model::Diagram;
 
 /// Move a block to (x, y) snapped to `grid`; locked blocks do not move.
 pub fn move_block(d: &mut Diagram, idx: usize, x: i32, y: i32, grid: i32) {
+    fn shift(i: &mut crate::model::Instance, dx: i32, dy: i32) {
+        i.x += dx;
+        i.y += dy;
+        i.children.iter_mut().for_each(|c| shift(c, dx, dy));
+    }
     if let Some(i) = d.instances.get_mut(idx).filter(|i| !i.locked) {
-        (i.x, i.y) = (snap(x, grid), snap(y, grid));
+        let (dx, dy) = (snap(x, grid) - i.x, snap(y, grid) - i.y);
+        shift(i, dx, dy); // a group carries its children (absolute coordinates)
     }
 }
 
@@ -191,5 +197,15 @@ mod tests {
         assert_eq!(hit_wire(std::slice::from_ref(&w), (50.0, 3.0), 4.0), Some(0));
         assert_eq!(hit_wire(std::slice::from_ref(&w), (103.0, 30.0), 4.0), Some(0));
         assert_eq!(hit_wire(std::slice::from_ref(&w), (50.0, 20.0), 4.0), None);
+    }
+
+    #[test]
+    fn moving_group_moves_children() {
+        let mut d = dia(vec![blk(0, 0), blk(200, 0)]);
+        let g = crate::group::create_group(&mut d, "G", &[0, 1], vec![]);
+        let (cx, cy) = (d.instances[g].children[1].x, d.instances[g].children[1].y);
+        let (gx, gy) = (d.instances[g].x, d.instances[g].y);
+        move_block(&mut d, g, gx + 100, gy + 60, 20);
+        assert_eq!((d.instances[g].children[1].x, d.instances[g].children[1].y), (cx + 100, cy + 60));
     }
 }
