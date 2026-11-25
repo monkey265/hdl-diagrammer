@@ -1,6 +1,6 @@
 use crate::model::Diagram;
 use crate::net::design_to_diagram;
-use crate::parser::parse_file;
+use crate::parser::{parse_file, resolve, sibling_entities};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -23,7 +23,10 @@ pub fn load(path: &Path, grid: i32) -> Result<Loaded, String> {
             warnings: vec![],
         })
     } else {
-        let design = parse_file(&name, &text);
+        let mut design = parse_file(&name, &text);
+        let mut lib = sibling_entities(path);
+        lib.extend(design.entities.clone()); // this file wins over siblings
+        resolve(&mut design, &lib);
         Ok(Loaded {
             diagram: design_to_diagram(&design, grid),
             signals: design.signals,

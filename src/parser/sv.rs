@@ -378,6 +378,10 @@ pub fn parse_sv(text: &str) -> Design {
         d.warnings.push("no module found".into());
         return d;
     }
+    d.entities = mods
+        .iter()
+        .map(|m| (m.name.to_ascii_lowercase(), m.ports.clone()))
+        .collect();
     let instantiated = |n: &str| mods.iter().any(|m| m.raws.iter().any(|r| r.module == n));
     let tops: Vec<&Module> = mods.iter().filter(|m| !instantiated(&m.name)).collect();
     let top = tops.first().copied().unwrap_or(&mods[0]);

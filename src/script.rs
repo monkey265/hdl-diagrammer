@@ -85,8 +85,7 @@ fn save(s: &mut Session, a: &[String]) -> Result<Value, String> {
 }
 
 fn export(s: &mut Session, a: &[String]) -> Result<Value, String> {
-    std::fs::write(&a[0], crate::svg::render(&s.diagram, &s.signals))
-        .map_err(|e| format!("cannot write {}: {e}", a[0]))?;
+    crate::svg::write(std::path::Path::new(&a[0]), &s.diagram, &s.signals)?;
     Ok(Value::empty())
 }
 
@@ -252,7 +251,7 @@ fn redo(s: &mut Session, _: &[String]) -> Result<Value, String> {
 const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     ("open", "file", 1, 1, open),
     ("save", "file.json", 1, 1, save),
-    ("export", "file.svg", 1, 1, export),
+    ("export", "file.svg|file.png", 1, 1, export),
     ("instances", "", 0, 0, instances),
     ("ports", "inst", 1, 1, ports),
     ("info", "inst", 1, 1, info),

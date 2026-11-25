@@ -1,7 +1,9 @@
 use crate::config::*;
+use crate::gates::GateKind;
+use crate::gates::gate_kind;
 use crate::group::active_instances;
 use crate::layout::port_pos;
-use crate::model::{Diagram, Direction};
+use crate::model::{Diagram, Direction, Instance};
 use crate::net::{net_class, pin_connected, route_all_opts, top_pin_positions, wire_junctions};
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -25,8 +27,75 @@ fn port_colour(d: Direction) -> String {
     })
 }
 
+fn gate_svg(s: &mut String, b: &Instance, kind: GateKind, fill: &str) {
+    let body_w = b.width as f32 - if kind.bubble() { 10.0 } else { 0.0 };
+    let pts = |v: &[(f32, f32)]| {
+        v.iter()
+            .map(|&(px, py)| {
+                format!(
+                    "{:.1},{:.1}",
+                    b.x as f32 + px * body_w,
+                    b.y as f32 + py * b.height as f32
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let shape = kind.shape();
+    let _ = writeln!(
+        s,
+        r##"<polygon points="{}" fill="{}" stroke="#333333" stroke-width="1.5"/>"##,
+        pts(&shape.body),
+        esc(fill)
+    );
+    if let Some(extra) = &shape.extra {
+        let _ = writeln!(
+            s,
+            r##"<polyline points="{}" fill="none" stroke="#333333" stroke-width="1.5"/>"##,
+            pts(extra)
+        );
+    }
+    if kind.bubble() {
+        let _ = writeln!(
+            s,
+            r##"<circle cx="{}" cy="{}" r="5" fill="#ffffff" stroke="#333333" stroke-width="1.5"/>"##,
+            b.x + b.width - 5,
+            b.y + b.height / 2
+        );
+    }
+}
+
+/// Write `d` to `path`: PNG (2x) when the extension is `.png`, otherwise SVG.
+pub fn write(
+    path: &std::path::Path,
+    d: &Diagram,
+    signals: &HashMap<String, String>,
+) -> Result<(), String> {
+    let svg = render(d, signals);
+    let err = |e: &dyn std::fmt::Display| format!("cannot write {}: {e}", path.display());
+    if !path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        return std::fs::write(path, svg).map_err(|e| err(&e));
+    }
+    let mut opt = resvg::usvg::Options::default();
+    opt.fontdb_mut().load_system_fonts();
+    let tree = resvg::usvg::Tree::from_str(&svg, &opt).map_err(|e| err(&e))?;
+    let size = tree.size();
+    let mut pix =
+        resvg::tiny_skia::Pixmap::new((size.width() * 2.0) as u32, (size.height() * 2.0) as u32)
+            .ok_or_else(|| err(&"diagram too large"))?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(2.0, 2.0),
+        &mut pix.as_mut(),
+    );
+    pix.save_png(path).map_err(|e| err(&e))
+}
+
 /// Static picture of the diagram: blocks, ports, routed wires, junctions and top-level pins.
-/// Gates are drawn as plain boxes (the ANSI symbols are a GUI-only nicety).
+/// Gates (AND, OR, NAND, …) get their ANSI symbol.
 pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
     let routing = route_all_opts(d, true);
     let (wires, stubs) = (routing.wires, routing.stubs);
@@ -97,15 +166,19 @@ pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
         } else {
             ""
         };
-        let _ = writeln!(
-            s,
-            r##"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" stroke="#333333" stroke-width="1.5"{dash}/>"##,
-            b.x,
-            b.y,
-            b.width,
-            b.height,
-            esc(&fill)
-        );
+        if let Some(kind) = gate_kind(&b.entity) {
+            gate_svg(&mut s, b, kind, &fill);
+        } else {
+            let _ = writeln!(
+                s,
+                r##"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" stroke="#333333" stroke-width="1.5"{dash}/>"##,
+                b.x,
+                b.y,
+                b.width,
+                b.height,
+                esc(&fill)
+            );
+        }
         let _ = writeln!(
             s,
             r#"<text x="{}" y="{}" font-size="{}" font-weight="bold" text-anchor="middle">{}</text>"#,
@@ -185,5 +258,21 @@ end;";
         assert_eq!(svg.matches("stroke=\"#333333\"").count(), 2); // one rect per block
         assert!(svg.contains("<line "), "wires drawn");
         assert!(svg.contains("a&lt;&amp;&gt;b") && !svg.contains("a<&>b"));
+    }
+
+    #[test]
+    fn gates_are_polygons_and_png_export_writes_a_png() {
+        let src = "entity t is port (a, b : in std_logic; q : out std_logic); end entity;
+architecture x of t is begin
+ g : entity work.NAND2 port map (i0 => a, i1 => b, o => q);
+end;";
+        let des = parse_vhdl(src);
+        let d = design_to_diagram(&des, 20);
+        let svg = render(&d, &des.signals);
+        assert!(svg.contains("<polygon") && svg.contains("r=\"5\""));
+        let f = std::env::temp_dir().join(format!("hdl_{}.png", std::process::id()));
+        write(&f, &d, &des.signals).unwrap();
+        assert_eq!(&std::fs::read(&f).unwrap()[1..4], b"PNG");
+        std::fs::remove_file(f).ok();
     }
 }

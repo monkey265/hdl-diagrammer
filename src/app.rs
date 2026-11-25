@@ -186,6 +186,20 @@ impl App {
         }
     }
 
+    fn export_image(&mut self) {
+        let Some(p) = rfd::FileDialog::new()
+            .add_filter("SVG", &["svg"])
+            .add_filter("PNG", &["png"])
+            .set_file_name("diagram.svg")
+            .save_file()
+        else {
+            return;
+        };
+        if let Err(e) = crate::svg::write(&p, &self.diagram, &self.signals) {
+            self.warnings = vec![e];
+        }
+    }
+
     /// Re-route after any change to the diagram.
     pub fn refresh(&mut self) {
         self.pin_pos = top_pin_positions(&self.diagram);
@@ -394,6 +408,10 @@ impl eframe::App for App {
                     if ui.button("Save As…").clicked() {
                         ui.close();
                         self.save_as();
+                    }
+                    if ui.button("Export SVG/PNG…").clicked() {
+                        ui.close();
+                        self.export_image();
                     }
                 });
                 ui.menu_button("Edit", |ui| {

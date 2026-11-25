@@ -148,6 +148,11 @@ pub fn parse_vhdl(text: &str) -> Design {
         d.instances.push(Instance::new(&label, &ent, ports));
     }
 
+    d.entities = entities
+        .iter()
+        .map(|(n, p)| (n.to_ascii_lowercase(), p.clone()))
+        .collect();
+
     // Top = first entity nobody instantiates, else first entity.
     let top = entities
         .iter()
