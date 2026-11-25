@@ -99,9 +99,10 @@ pub fn auto_layout(d: &mut crate::model::Diagram, grid: i32) {
                 continue;
             }
             let e = by_sig.entry(p.signal.as_str()).or_default();
-            if p.direction == Direction::In {
+            if p.direction != Direction::Out {
                 e.1.push(k);
-            } else {
+            }
+            if p.direction != Direction::In {
                 e.0.push(k);
             }
         }
@@ -195,25 +196,42 @@ pub fn auto_layout(d: &mut crate::model::Diagram, grid: i32) {
     // coordinates
     let w = |k: usize| d.instances[nodes[k]].width;
     let h = |k: usize| d.instances[nodes[k]].height;
-    let heights: Vec<i32> = rows
-        .iter()
-        .map(|r| r.iter().map(|&k| h(k)).sum::<i32>() + 60 * r.len().saturating_sub(1) as i32)
-        .collect();
-    let tallest = heights.iter().copied().max().unwrap_or(0);
+    // a layer taller than CAP wraps into side-by-side columns (e.g. many unconnected blocks)
+    const CAP: i32 = 2400;
+    let mut chunks: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (l, r) in rows.iter().enumerate() {
+        let (mut cur, mut hh) = (Vec::new(), 0);
+        for &k in r {
+            if !cur.is_empty() && hh + h(k) > CAP {
+                chunks.push((l, std::mem::take(&mut cur)));
+                hh = 0;
+            }
+            hh += h(k) + 60;
+            cur.push(k);
+        }
+        chunks.push((l, cur));
+    }
+    let height =
+        |c: &[usize]| c.iter().map(|&k| h(k)).sum::<i32>() + 60 * c.len().saturating_sub(1) as i32;
+    let tallest = chunks.iter().map(|(_, c)| height(c)).max().unwrap_or(0);
     let mut x = 50;
     let mut place: Vec<(usize, i32, i32)> = Vec::new();
-    for (l, r) in rows.iter().enumerate() {
-        let mut y = 40 + (tallest - heights[l]) / 2;
-        for &k in r {
+    for (ci, (l, c)) in chunks.iter().enumerate() {
+        let mut y = 40 + (tallest - height(c)) / 2;
+        for &k in c {
             place.push((nodes[k], x, y));
             y += h(k) + 60;
         }
-        let crossing = fwd
-            .iter()
-            .filter(|&&(a, b)| layer[a] <= l && layer[b] > l)
-            .count() as i32;
-        let colw = r.iter().map(|&k| w(k)).max().unwrap_or(0);
-        x += colw + 180 + 10 * crossing.min(24);
+        let colw = c.iter().map(|&k| w(k)).max().unwrap_or(0);
+        let last_of_layer = chunks.get(ci + 1).is_none_or(|n| n.0 != *l);
+        let crossing = if last_of_layer {
+            fwd.iter()
+                .filter(|&&(a, b)| layer[a] <= *l && layer[b] > *l)
+                .count() as i32
+        } else {
+            0
+        };
+        x += colw + if last_of_layer { 180 } else { 80 } + 10 * crossing.min(24);
     }
     for (i, px, py) in place {
         crate::edit::move_block(d, i, px, py, grid);
@@ -430,6 +448,30 @@ mod tests {
         auto_layout(&mut e, 20);
         assert!(no_overlap(&e));
         auto_layout(&mut Diagram::default(), 20);
+    }
+
+    #[test]
+    fn unconnected_blocks_wrap_and_groups_keep_their_children_together() {
+        let mut d = crate::model::Diagram::default();
+        for k in 0..60 {
+            let mut i = Instance::new(&format!("u{k}"), "E", vec![]);
+            (i.width, i.height) = (100, 200);
+            d.instances.push(i);
+        }
+        auto_layout(&mut d, 20);
+        let h = d.instances.iter().map(|i| i.y + i.height).max().unwrap();
+        assert!(h <= 2600 && no_overlap(&d), "height {h}");
+
+        let mut d = chain(3, false);
+        let mut kid = Instance::new("kid", "E", vec![]);
+        (kid.x, kid.y, kid.width, kid.height) = (30, 50, 40, 40);
+        let mut g = Instance::new("g", "GROUP", vec![Port::new("o", Direction::Out, "s0")]);
+        (g.x, g.y, g.width, g.height, g.is_group) = (0, 0, 100, 100, true);
+        g.children = vec![kid];
+        d.instances[0] = g;
+        auto_layout(&mut d, 20);
+        let g = &d.instances[0];
+        assert_eq!((g.children[0].x - g.x, g.children[0].y - g.y), (30, 50));
     }
 
     #[test]

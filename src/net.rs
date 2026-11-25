@@ -37,17 +37,20 @@ pub enum NetClass {
 
 fn name_class(sig: &str) -> Option<NetClass> {
     let l = sig.to_ascii_lowercase();
-    l.split(|c: char| !c.is_ascii_alphanumeric()).find_map(|t| {
-        if t.starts_with("clk") || t.starts_with("clock") {
-            Some(NetClass::Clock)
-        } else if ["rst", "reset", "arst", "areset"]
-            .iter()
-            .any(|p| t.starts_with(p))
-        {
-            Some(NetClass::Reset)
-        } else {
-            None
-        }
+    // words after the clock/reset word that mark a derived control signal (`clk_en`, `reset_done`)
+    const DERIVED: [&str; 16] = [
+        "en", "enable", "div", "valid", "done", "ready", "strobe", "stb", "req", "ack", "cnt",
+        "count", "tick", "pulse", "ok", "locked",
+    ];
+    let toks: Vec<&str> = l.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+    toks.iter().enumerate().find_map(|(i, t)| {
+        let class = match t.trim_end_matches(|c: char| c.is_ascii_digit()) {
+            "clk" | "clock" | "clks" => NetClass::Clock,
+            "rst" | "rstn" | "reset" | "resetn" | "arst" | "arstn" | "areset" | "aresetn"
+            | "srst" | "srstn" => NetClass::Reset,
+            _ => return None,
+        };
+        (!toks[i + 1..].iter().any(|w| DERIVED.contains(w))).then_some(class)
     })
 }
 
@@ -502,6 +505,10 @@ mod tests {
         assert_eq!(net_class("s_arst_n", &sig), NetClass::Reset);
         assert_eq!(net_class("rst_n_in", &sig), NetClass::Reset);
         assert_eq!(net_class("first", &sig), NetClass::Signal); // "rst" inside a word is not a reset
+        assert_eq!(net_class("clk_en", &sig), NetClass::Undeclared);
+        assert_eq!(net_class("reset_done", &sig), NetClass::Undeclared);
+        assert_eq!(net_class("inputs.wiz_clk", &sig), NetClass::Clock);
+        assert_eq!(net_class("aresetn", &sig), NetClass::Reset);
         assert_eq!(net_class("a", &sig), NetClass::Signal);
         assert_eq!(net_class("v", &sig), NetClass::Bus);
         assert_eq!(net_class("axi", &sig), NetClass::Bus);

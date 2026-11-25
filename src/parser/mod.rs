@@ -13,6 +13,8 @@ pub struct Design {
     pub signals: HashMap<String, String>,
     pub warnings: Vec<String>,
     /// Every entity/module declared in the file: lowercase name -> ports (for cross-file lookup).
+    /// Positional connections by instance label, resolved later when the entity is found elsewhere.
+    pub positional: HashMap<String, Vec<String>>,
     pub entities: HashMap<String, Vec<Port>>,
 }
 
@@ -41,6 +43,15 @@ pub fn resolve(d: &mut Design, lib: &HashMap<String, Vec<Port>>) {
             continue;
         };
         let mut old = std::mem::take(&mut inst.ports);
+        if let Some(acts) = d.positional.get(&inst.name) {
+            // `entity work.sub port map (a, b)`: the k-th actual goes to the k-th declared port
+            for (dp, act) in decl.iter().zip(acts) {
+                old.push(Port::new(&dp.name, dp.direction, act));
+            }
+            let tag = format!("in instance {} ", inst.name);
+            d.warnings
+                .retain(|w| !(w.contains("positional") && w.contains(&tag)));
+        }
         let mut ports: Vec<Port> = decl
             .iter()
             .map(|dp| {
@@ -134,6 +145,36 @@ architecture x of top is begin u1 : entity work.sub port map (i => a); end;",
                 ("o", "", Direction::Out),
                 ("spare", "", Direction::Out)
             ]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn positional_connections_resolve_through_sibling_file() {
+        let dir = std::env::temp_dir().join(format!("hdl_pos_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("top.vhd"),
+            "entity top is port (a : in std_logic; q : out std_logic); end entity;
+architecture x of top is begin u1 : entity work.sub port map (a, q); end;",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("sub.vhd"),
+            "entity sub is port (i : in std_logic; o : out std_logic); end entity;",
+        )
+        .unwrap();
+        let l = crate::load::load(&dir.join("top.vhd"), 20).unwrap();
+        let got: Vec<_> = l.diagram.instances[0]
+            .ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.signal.as_str()))
+            .collect();
+        assert_eq!(got, vec![("i", "a"), ("o", "q")]);
+        assert!(
+            l.warnings.iter().all(|w| !w.contains("positional")),
+            "{:?}",
+            l.warnings
         );
         std::fs::remove_dir_all(&dir).ok();
     }

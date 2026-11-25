@@ -398,7 +398,7 @@ pub fn parse_sv(text: &str) -> Design {
     d.signals = top.signals.clone();
     for raw in &top.raws {
         let known = mods.iter().find(|m| m.name == raw.module);
-        let (mut ports, mut positional) = (Vec::new(), false);
+        let (mut ports, mut positional, mut acts) = (Vec::new(), false, Vec::new());
         for (idx, c) in raw.conns.iter().enumerate() {
             let c = c.trim();
             if c.is_empty() {
@@ -430,6 +430,7 @@ pub fn parse_sv(text: &str) -> Design {
                 ports.push(Port::new(&p.name, p.direction, &squash(c)));
             } else {
                 positional = true;
+                acts.push(squash(c));
             }
         }
         if positional {
@@ -437,6 +438,7 @@ pub fn parse_sv(text: &str) -> Design {
                 "positional connections in instance {} skipped: module {} not in this file",
                 raw.label, raw.module
             ));
+            d.positional.insert(raw.label.clone(), acts);
         }
         d.instances
             .push(Instance::new(&raw.label, &raw.module, ports));

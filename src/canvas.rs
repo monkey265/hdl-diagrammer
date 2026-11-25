@@ -230,8 +230,20 @@ impl Canvas {
                     self.selected = vec![i];
                 }
             } else {
-                let hit = edit::hit_wire(scene.wires, w, 4.0 / self.zoom)
-                    .map(|k| scene.wires[k].signal.clone());
+                let tol = 4.0 / self.zoom;
+                let hit = edit::hit_wire(scene.wires, w, tol)
+                    .map(|k| scene.wires[k].signal.clone())
+                    .or_else(|| {
+                        scene
+                            .stubs
+                            .iter()
+                            .find(|s| {
+                                (w.1 - s.pos.1 as f32).abs() <= tol
+                                    && (w.0 - s.pos.0 as f32) * s.dir as f32 >= -tol
+                                    && (w.0 - s.pos.0 as f32).abs() <= 40.0 + tol
+                            })
+                            .map(|s| s.signal.clone())
+                    });
                 self.highlight = hit;
                 self.selected.clear();
             }
@@ -382,8 +394,7 @@ impl Canvas {
                     .max_by_key(|((x1, y1), (x2, y2))| (x2 - x1).abs() + (y2 - y1).abs())
             {
                 let mid = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
-                let g =
-                    painter.layout_no_wrap(w.signal.clone(), font(8.0), color.gamma_multiply(1.0));
+                let g = painter.layout_no_wrap(w.signal.clone(), font(8.0), color);
                 let pos = to_s(mid) - Vec2::new(g.size().x / 2.0, g.size().y + 2.0 * z);
                 painter.rect_filled(
                     Rect::from_min_size(pos, g.size()).expand(1.0),
