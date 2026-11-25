@@ -12,3 +12,18 @@ pub const HIGHLIGHT: (u8, u8, u8) = (0xFF, 0x6F, 0x00);
 pub const INPUT_PORT: (u8, u8, u8) = (0x21, 0x96, 0xF3);
 pub const OUTPUT_PORT: (u8, u8, u8) = (0xF4, 0x43, 0x36);
 pub const INSTANCE_BG: (u8, u8, u8) = (0xE8, 0xF4, 0xF8);
+pub const CLOCK: (u8, u8, u8) = (0x8E, 0x24, 0xAA);
+pub const RESET: (u8, u8, u8) = (0x79, 0x55, 0x48);
+pub const BUS: (u8, u8, u8) = (0x15, 0x65, 0xC0);
+
+/// Wire colour and width (px) for a net class.
+pub fn class_style(c: crate::net::NetClass) -> ((u8, u8, u8), f32) {
+    use crate::net::NetClass::*;
+    match c {
+        Clock => (CLOCK, 1.5),
+        Reset => (RESET, 1.5),
+        Bus => (BUS, 2.5),
+        Signal => (SIGNAL, 1.5),
+        Undeclared => (UNDECLARED, 1.5),
+    }
+}

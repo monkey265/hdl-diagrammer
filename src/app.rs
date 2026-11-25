@@ -5,7 +5,7 @@ use crate::geometry::Pt;
 use crate::group;
 use crate::history::History;
 use crate::model::{Diagram, Direction, Port};
-use crate::net::{Wire, route_all, top_pin_positions, wire_junctions};
+use crate::net::{Stub, Wire, pin_connected, route_all_opts, top_pin_positions, wire_junctions};
 use crate::recent;
 use crate::script::{Script, Session};
 use crate::ui::{Action, inspector};
@@ -39,6 +39,9 @@ pub struct App {
     wires: Vec<Wire>,
     junctions: Vec<(String, Pt)>,
     pin_pos: Vec<Pt>,
+    pin_ok: Vec<bool>,
+    stubs: Vec<Stub>,
+    stub_globals: bool,
     canvas: Canvas,
     grid: i32,
     history: History<Diagram>,
@@ -61,6 +64,9 @@ impl Default for App {
             wires: vec![],
             junctions: vec![],
             pin_pos: vec![],
+            pin_ok: vec![],
+            stubs: vec![],
+            stub_globals: true,
             canvas: Canvas::default(),
             grid: DEFAULT_GRID,
             history: History::default(),
@@ -183,7 +189,9 @@ impl App {
     /// Re-route after any change to the diagram.
     pub fn refresh(&mut self) {
         self.pin_pos = top_pin_positions(&self.diagram);
-        self.wires = route_all(&self.diagram);
+        let r = route_all_opts(&self.diagram, self.stub_globals);
+        (self.wires, self.stubs) = (r.wires, r.stubs);
+        self.pin_ok = pin_connected(&self.diagram);
         self.junctions = wire_junctions(&self.diagram, &self.wires);
     }
 
@@ -414,6 +422,13 @@ impl eframe::App for App {
                     ui.checkbox(&mut self.canvas.show_grid, "Grid");
                     ui.checkbox(&mut self.canvas.show_signal_names, "Signal names");
                     ui.checkbox(&mut self.console_open, "Tcl console");
+                    ui.checkbox(&mut self.canvas.show_unconnected, "Unconnected pins");
+                    if ui
+                        .checkbox(&mut self.stub_globals, "Clock/reset as stubs")
+                        .changed()
+                    {
+                        self.refresh();
+                    }
                     for (label, g) in GRID_OPTIONS {
                         ui.radio_value(&mut self.grid, g, label);
                     }
@@ -458,6 +473,8 @@ impl eframe::App for App {
                 wires: &self.wires,
                 junctions: &self.junctions,
                 pin_pos: &self.pin_pos,
+                pin_connected: &self.pin_ok,
+                stubs: &self.stubs,
                 signals: &self.signals,
                 grid: self.grid,
             };

@@ -2,7 +2,7 @@ use crate::config::*;
 use crate::group::active_instances;
 use crate::layout::port_pos;
 use crate::model::{Diagram, Direction};
-use crate::net::{route_all, top_pin_positions, wire_junctions};
+use crate::net::{net_class, pin_connected, route_all_opts, top_pin_positions, wire_junctions};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -28,7 +28,9 @@ fn port_colour(d: Direction) -> String {
 /// Static picture of the diagram: blocks, ports, routed wires, junctions and top-level pins.
 /// Gates are drawn as plain boxes (the ANSI symbols are a GUI-only nicety).
 pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
-    let wires = route_all(d);
+    let routing = route_all_opts(d, true);
+    let (wires, stubs) = (routing.wires, routing.stubs);
+    let linked = pin_connected(d);
     let pins = top_pin_positions(d);
     let junctions = wire_junctions(d, &wires);
     let blocks = active_instances(d);
@@ -54,24 +56,34 @@ pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
         r##"<rect x="{x0}" y="{y0}" width="{w}" height="{h}" fill="#ffffff"/>"##
     );
     for wire in &wires {
-        let c = hex(if signals.contains_key(&wire.signal) {
-            SIGNAL
-        } else {
-            UNDECLARED
-        });
+        let (rgb, width) = class_style(net_class(&wire.signal, signals));
+        let c = hex(rgb);
         for ((ax, ay), (bx, by)) in &wire.segments {
             let _ = writeln!(
                 s,
-                r#"<line x1="{ax}" y1="{ay}" x2="{bx}" y2="{by}" stroke="{c}" stroke-width="2"><title>{}</title></line>"#,
+                r#"<line x1="{ax}" y1="{ay}" x2="{bx}" y2="{by}" stroke="{c}" stroke-width="{width}"><title>{}</title></line>"#,
                 esc(&wire.signal)
             );
         }
     }
-    for (_, (x, y)) in &junctions {
+    for (sig, (x, y)) in &junctions {
         let _ = writeln!(
             s,
             r#"<circle cx="{x}" cy="{y}" r="3" fill="{}"/>"#,
-            hex(SIGNAL)
+            hex(class_style(net_class(sig, signals)).0)
+        );
+    }
+    for st in &stubs {
+        let c = hex(class_style(net_class(&st.signal, signals)).0);
+        let (x, y) = st.pos;
+        let e = x + st.dir * 24;
+        let anchor = if st.dir > 0 { "start" } else { "end" };
+        let _ = writeln!(
+            s,
+            r#"<line x1="{x}" y1="{y}" x2="{e}" y2="{y}" stroke="{c}" stroke-width="1.5"/><text x="{}" y="{}" font-size="8" fill="{c}" text-anchor="{anchor}">{}</text>"#,
+            e + st.dir * 2,
+            y + 3,
+            esc(&st.signal)
         );
     }
     for b in &blocks {
@@ -127,7 +139,7 @@ pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
             );
         }
     }
-    for (p, &(px, py)) in d.top_level_pins.iter().zip(&pins) {
+    for (k, (p, &(px, py))) in d.top_level_pins.iter().zip(&pins).enumerate() {
         let (tx, anchor) = if p.direction == Direction::In {
             (px - 8, "end")
         } else {
@@ -135,9 +147,16 @@ pub fn render(d: &Diagram, signals: &HashMap<String, String>) -> String {
         };
         let _ = writeln!(
             s,
-            r#"<circle cx="{px}" cy="{py}" r="4" fill="{}"/><text x="{tx}" y="{}" font-size="9" text-anchor="{anchor}">{}</text>"#,
+            r#"<circle cx="{px}" cy="{py}" r="4" fill="{}" stroke="{}" opacity="{}"/><text x="{tx}" y="{}" font-size="9" text-anchor="{anchor}" opacity="{}">{}</text>"#,
+            if linked[k] {
+                port_colour(p.direction)
+            } else {
+                "#ffffff".into()
+            },
             port_colour(p.direction),
+            if linked[k] { 1.0 } else { 0.5 },
             py + 3,
+            if linked[k] { 1.0 } else { 0.5 },
             esc(&p.name)
         );
     }
@@ -163,7 +182,7 @@ end;";
         d.instances[0].name = "a<&>b".into();
         let svg = render(&d, &des.signals);
         assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
-        assert_eq!(svg.matches("stroke-width=\"1.5\"").count(), 2); // one rect per block
+        assert_eq!(svg.matches("stroke=\"#333333\"").count(), 2); // one rect per block
         assert!(svg.contains("<line "), "wires drawn");
         assert!(svg.contains("a&lt;&amp;&gt;b") && !svg.contains("a<&>b"));
     }
