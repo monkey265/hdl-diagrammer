@@ -12,9 +12,15 @@ pub enum Action {
     ResetPorts(usize),
     DeletePort(usize, usize),
     Highlight(Option<String>),
-    Select(usize),
     ToggleCollapse(usize),
     Ungroup(usize),
     GroupSelection,
     NewGroup,
+    AutoLayout,
+    AutoLayoutSelection,
+    /// Select a block and pan the view to it.
+    Focus(usize),
+    CollapseInterfaces,
+    ExpandInterfaces,
+    Validate,
 }

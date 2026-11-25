@@ -129,6 +129,7 @@ mod tests {
                 blk("c", 400, 0, "s2"),
             ],
             top_level_pins: vec![Port::new("s2", Direction::Out, "s2")],
+            ..Default::default()
         }
     }
 

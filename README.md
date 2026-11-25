@@ -51,7 +51,16 @@ The same commands run in View > Tcl console, sharing the GUI's undo history.
 | `rename i new`, `move i x y`, `color i #hex\|""`, `size i w h\|auto` | edit a block |
 | `lock i`, `unlock i`, `hide i`, `show i` | block state |
 | `group g i…`, `ungroup g`, `collapse g`, `expand g` | groups |
+| `autolayout` | layered left-to-right layout (locked blocks stay) |
 | `undo`, `redo` | one step per command |
 
 Errors are ordinary Tcl errors (catchable with `catch`) and leave the diagram unchanged.
 Children of an expanded group cannot be addressed by name yet; `puts` prints to the terminal, not the console panel.
+
+## Reading big diagrams
+
+- Files open in a layered layout (drivers left, loads right); Edit > Auto layout redoes it.
+- Wires are coloured by class: clock purple, reset brown, bus blue (thicker), plain green, undeclared grey.
+- View > "Clock/reset as stubs" (on by default) draws clock/reset nets and any net with 8+ pins as a short labelled stub at each pin instead of a routed wire.
+- Click a wire to fade every other net. Each net is labelled once.
+- Top-level pins with no connection are hollow; hide them with View > Unconnected pins.

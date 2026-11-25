@@ -6,6 +6,7 @@ mod gates;
 mod geometry;
 mod group;
 mod history;
+mod interface;
 mod layout;
 mod load;
 mod model;
@@ -16,6 +17,7 @@ mod router;
 mod script;
 mod svg;
 mod ui;
+mod validate;
 
 const USAGE: &str = "usage: hdl-diagrammer [file.vhd|.sv|.json] [--script file.tcl [--gui]]
   --script  run a Tcl script (headless unless --gui is also given)";
@@ -62,7 +64,10 @@ fn main() -> eframe::Result {
     }
     eframe::run_native(
         "hdl-diagrammer",
-        eframe::NativeOptions::default(),
+        eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
+            ..Default::default()
+        },
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(eframe::egui::Visuals::light());
             Ok(Box::new(app))

@@ -4,7 +4,7 @@ use crate::gates::gate_kind;
 use crate::geometry::Pt;
 use crate::layout::port_pos;
 use crate::model::{Diagram, Direction, Instance};
-use crate::net::Wire;
+use crate::net::{Stub, Wire, net_class};
 use crate::ui::Action;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::collections::HashMap;
@@ -15,6 +15,8 @@ pub struct View<'a> {
     pub wires: &'a [Wire],
     pub junctions: &'a [(String, Pt)],
     pub pin_pos: &'a [Pt],
+    pub pin_connected: &'a [bool],
+    pub stubs: &'a [Stub],
     pub signals: &'a HashMap<String, String>,
     pub grid: i32,
 }
@@ -43,6 +45,7 @@ pub struct Canvas {
     pub pan: Vec2,
     pub show_grid: bool,
     pub show_signal_names: bool,
+    pub show_unconnected: bool,
     pub fit_requested: bool,
     pub selected: Vec<usize>,
     pub highlight: Option<String>,
@@ -60,6 +63,7 @@ impl Default for Canvas {
             pan: Vec2::ZERO,
             show_grid: true,
             show_signal_names: true,
+            show_unconnected: true,
             fit_requested: true,
             selected: vec![],
             highlight: None,
@@ -85,14 +89,9 @@ pub fn parse_hex(s: &str) -> Option<Color32> {
     Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
-fn signal_color(sig: &str, signals: &HashMap<String, String>) -> Color32 {
-    if sig.eq_ignore_ascii_case("open") {
-        rgb(UNDECLARED)
-    } else if signals.contains_key(sig) {
-        rgb(SIGNAL)
-    } else {
-        rgb(UNDECLARED)
-    }
+fn signal_style(sig: &str, signals: &HashMap<String, String>) -> (Color32, f32) {
+    let (c, w) = class_style(net_class(sig, signals));
+    (rgb(c), w)
 }
 
 impl Canvas {
@@ -108,6 +107,13 @@ impl Canvas {
             .iter()
             .map(|p| Pos2::new(p.0 as f32, p.1 as f32))
             .collect();
+        pts.extend(
+            scene
+                .wires
+                .iter()
+                .flat_map(|w| &w.segments)
+                .flat_map(|&(a, b)| [a, b].map(|p| Pos2::new(p.0 as f32, p.1 as f32))),
+        );
         for i in scene.diagram.instances.iter().filter(|i| i.visible) {
             pts.push(Pos2::new(i.x as f32, i.y as f32));
             pts.push(Pos2::new((i.x + i.width) as f32, (i.y + i.height) as f32));
@@ -224,8 +230,20 @@ impl Canvas {
                     self.selected = vec![i];
                 }
             } else {
-                let hit = edit::hit_wire(scene.wires, w, 4.0 / self.zoom)
-                    .map(|k| scene.wires[k].signal.clone());
+                let tol = 4.0 / self.zoom;
+                let hit = edit::hit_wire(scene.wires, w, tol)
+                    .map(|k| scene.wires[k].signal.clone())
+                    .or_else(|| {
+                        scene
+                            .stubs
+                            .iter()
+                            .find(|s| {
+                                (w.1 - s.pos.1 as f32).abs() <= tol
+                                    && (w.0 - s.pos.0 as f32) * s.dir as f32 >= -tol
+                                    && (w.0 - s.pos.0 as f32).abs() <= 40.0 + tol
+                            })
+                            .map(|s| s.signal.clone())
+                    });
                 self.highlight = hit;
                 self.selected.clear();
             }
@@ -344,53 +362,113 @@ impl Canvas {
             }
         }
 
-        // wires under blocks' labels but over the grid
-        for w in scene.wires {
-            let hl = self.highlight.as_deref() == Some(w.signal.as_str());
-            let color = if hl {
-                rgb(HIGHLIGHT)
+        // wires under blocks' labels but over the grid; with a net selected, the others fade
+        // a selected block keeps its own nets bright and fades the rest
+        let hot: Option<std::collections::HashSet<&str>> =
+            (self.highlight.is_none() && !self.selected.is_empty()).then(|| {
+                self.selected
+                    .iter()
+                    .filter_map(|&i| scene.diagram.instances.get(i))
+                    .flat_map(|i| i.ports.iter().map(|p| p.signal.as_str()))
+                    .collect()
+            });
+        let dim = self.highlight.is_some() || hot.is_some();
+        let pick = |sig: &str| -> (Color32, f32) {
+            if self.highlight.as_deref() == Some(sig) {
+                (rgb(HIGHLIGHT), 3.0)
             } else {
-                signal_color(&w.signal, scene.signals)
-            };
-            for &(a, b) in &w.segments {
-                painter.line_segment(
-                    [to_s(a), to_s(b)],
-                    Stroke::new(if hl { 3.0 } else { 1.5 }, color),
-                );
+                let (c, w) = signal_style(sig, scene.signals);
+                if dim && !hot.as_ref().is_some_and(|h| h.contains(sig)) {
+                    (c.gamma_multiply(0.25), w)
+                } else {
+                    (c, w)
+                }
             }
-            if self.show_signal_names
+        };
+        let mut labelled: std::collections::HashSet<&str> = Default::default();
+        for w in scene.wires {
+            let (color, width) = pick(&w.signal);
+            for &(a, b) in &w.segments {
+                painter.line_segment([to_s(a), to_s(b)], Stroke::new(width, color));
+            }
+            // one label per net (its first wire), on a white backing, only when legible
+            let shown =
+                self.show_signal_names || self.highlight.as_deref() == Some(w.signal.as_str());
+            if shown
                 && text_ok(8.0)
+                && labelled.insert(w.signal.as_str())
                 && let Some(&(a, b)) = w
                     .segments
                     .iter()
                     .max_by_key(|((x1, y1), (x2, y2))| (x2 - x1).abs() + (y2 - y1).abs())
             {
                 let mid = ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
+                let g = painter.layout_no_wrap(w.signal.clone(), font(8.0), color);
+                let pos = to_s(mid) - Vec2::new(g.size().x / 2.0, g.size().y + 2.0 * z);
+                painter.rect_filled(
+                    Rect::from_min_size(pos, g.size()).expand(1.0),
+                    1.0,
+                    Color32::WHITE.gamma_multiply(0.85),
+                );
+                painter.galley(pos, g, color);
+            }
+        }
+        for s in scene.stubs {
+            let (color, width) = pick(&s.signal);
+            let p = to_s(s.pos);
+            let e = p + Vec2::new(s.dir as f32 * 24.0 * z, 0.0);
+            painter.line_segment([p, e], Stroke::new(width, color));
+            if text_ok(8.0) {
+                let anchor = if s.dir > 0 {
+                    Align2::LEFT_CENTER
+                } else {
+                    Align2::RIGHT_CENTER
+                };
                 painter.text(
-                    to_s(mid) - Vec2::new(0.0, 2.0 * z),
-                    Align2::CENTER_BOTTOM,
-                    &w.signal,
+                    e + Vec2::new(s.dir as f32 * 2.0 * z, 0.0),
+                    anchor,
+                    &s.signal,
                     font(8.0),
                     color,
                 );
             }
         }
         for (sig, p) in scene.junctions {
-            painter.circle_filled(to_s(*p), 3.0 * z, signal_color(sig, scene.signals));
+            painter.circle_filled(to_s(*p), 3.0 * z, pick(sig).0);
         }
 
         for (ii, inst) in scene.diagram.instances.iter().enumerate() {
             self.draw_instance(&painter, origin, inst, self.selected.contains(&ii));
         }
 
-        for (pin, pos) in scene.diagram.top_level_pins.iter().zip(scene.pin_pos) {
+        for (k, (pin, pos)) in scene
+            .diagram
+            .top_level_pins
+            .iter()
+            .zip(scene.pin_pos)
+            .enumerate()
+        {
+            let linked = scene.pin_connected.get(k).copied().unwrap_or(true);
+            if !linked && !self.show_unconnected {
+                continue;
+            }
             let c = to_s(*pos);
             let col = if pin.direction == Direction::In {
                 rgb(INPUT_PORT)
             } else {
                 rgb(OUTPUT_PORT)
             };
-            painter.rect_filled(Rect::from_center_size(c, Vec2::splat(8.0 * z)), 1.0, col);
+            let r = Rect::from_center_size(c, Vec2::splat(8.0 * z));
+            if linked {
+                painter.rect_filled(r, 1.0, col);
+            } else {
+                painter.rect_stroke(
+                    r,
+                    1.0,
+                    Stroke::new(1.0, col.gamma_multiply(0.6)),
+                    StrokeKind::Inside,
+                );
+            }
             if text_ok(8.0) {
                 let (anchor, dx) = if pin.direction == Direction::In {
                     (Align2::RIGHT_CENTER, -8.0)
@@ -402,7 +480,11 @@ impl Canvas {
                     anchor,
                     &pin.name,
                     font(9.0),
-                    Color32::BLACK,
+                    if linked {
+                        Color32::BLACK
+                    } else {
+                        Color32::GRAY
+                    },
                 );
             }
         }

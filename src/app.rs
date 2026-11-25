@@ -5,7 +5,7 @@ use crate::geometry::Pt;
 use crate::group;
 use crate::history::History;
 use crate::model::{Diagram, Direction, Port};
-use crate::net::{Wire, route_all, top_pin_positions, wire_junctions};
+use crate::net::{Stub, Wire, pin_connected, route_all_opts, top_pin_positions, wire_junctions};
 use crate::recent;
 use crate::script::{Script, Session};
 use crate::ui::{Action, inspector};
@@ -39,6 +39,9 @@ pub struct App {
     wires: Vec<Wire>,
     junctions: Vec<(String, Pt)>,
     pin_pos: Vec<Pt>,
+    pin_ok: Vec<bool>,
+    stubs: Vec<Stub>,
+    stub_globals: bool,
     canvas: Canvas,
     grid: i32,
     history: History<Diagram>,
@@ -47,6 +50,7 @@ pub struct App {
     recent: Vec<String>,
     script: Script,
     console_open: bool,
+    filter: String,
     console_input: String,
     console_log: Vec<String>,
 }
@@ -61,6 +65,9 @@ impl Default for App {
             wires: vec![],
             junctions: vec![],
             pin_pos: vec![],
+            pin_ok: vec![],
+            stubs: vec![],
+            stub_globals: true,
             canvas: Canvas::default(),
             grid: DEFAULT_GRID,
             history: History::default(),
@@ -69,6 +76,7 @@ impl Default for App {
             recent: recent::load(),
             script: Script::new(DEFAULT_GRID),
             console_open: false,
+            filter: String::new(),
             console_input: String::new(),
             console_log: vec![],
         }
@@ -180,10 +188,26 @@ impl App {
         }
     }
 
+    fn export_image(&mut self) {
+        let Some(p) = rfd::FileDialog::new()
+            .add_filter("SVG", &["svg"])
+            .add_filter("PNG", &["png"])
+            .set_file_name("diagram.svg")
+            .save_file()
+        else {
+            return;
+        };
+        if let Err(e) = crate::svg::write(&p, &self.diagram, &self.signals) {
+            self.warnings = vec![e];
+        }
+    }
+
     /// Re-route after any change to the diagram.
     pub fn refresh(&mut self) {
         self.pin_pos = top_pin_positions(&self.diagram);
-        self.wires = route_all(&self.diagram);
+        let r = route_all_opts(&self.diagram, self.stub_globals);
+        (self.wires, self.stubs) = (r.wires, r.stubs);
+        self.pin_ok = pin_connected(&self.diagram);
         self.junctions = wire_junctions(&self.diagram, &self.wires);
     }
 
@@ -220,7 +244,7 @@ impl App {
 
     fn apply(&mut self, a: Action) {
         let g = self.grid;
-        if !matches!(a, Action::Highlight(_) | Action::Select(_)) {
+        if !matches!(a, Action::Highlight(_) | Action::Focus(_)) {
             // a stale prompt/dialog would index blocks this action may shift or remove
             (self.prompt, self.group_dialog) = (None, None);
         }
@@ -266,11 +290,38 @@ impl App {
                 edit::refit(d, i, g);
             }),
             Action::Highlight(s) => self.canvas.highlight = s,
-            Action::Select(i) => self.canvas.selected = vec![i],
             Action::ToggleCollapse(i) => self.edit(|d| group::toggle_collapse(d, i, g)),
             Action::Ungroup(i) => {
                 self.edit(|d| group::ungroup(d, i));
                 self.canvas.selected.clear();
+            }
+            Action::AutoLayout => self.edit(|d| crate::layout::auto_layout(d, g)),
+            Action::AutoLayoutSelection => {
+                let sel = self.canvas.selected.clone();
+                self.edit(|d| crate::layout::auto_layout_subset(d, &sel, g));
+            }
+            Action::Focus(i) => {
+                if let Some(b) = self.diagram.instances.get(i) {
+                    let (cx, cy) = (b.x + b.width / 2, b.y + b.height / 2);
+                    let vc = self.canvas.view_center;
+                    let z = self.canvas.zoom;
+                    self.canvas.pan +=
+                        eframe::egui::Vec2::new((vc.0 - cx) as f32, (vc.1 - cy) as f32) * z;
+                    self.canvas.view_center = (cx, cy);
+                    self.canvas.selected = vec![i];
+                }
+            }
+            Action::CollapseInterfaces => self.edit(|d| {
+                crate::interface::collapse_all(d, g);
+            }),
+            Action::ExpandInterfaces => self.edit(|d| crate::interface::expand_all(d, g)),
+            Action::Validate => {
+                let found = crate::validate::validate(&self.diagram);
+                self.warnings = if found.is_empty() {
+                    vec!["validate: no problems found".into()]
+                } else {
+                    found
+                };
             }
             Action::NewGroup => {
                 let (x, y) = self.canvas.view_center;
@@ -386,6 +437,10 @@ impl eframe::App for App {
                         ui.close();
                         self.save_as();
                     }
+                    if ui.button("Export SVG/PNG…").clicked() {
+                        ui.close();
+                        self.export_image();
+                    }
                 });
                 ui.menu_button("Edit", |ui| {
                     if ui.button("Undo (Ctrl+Z)").clicked() {
@@ -401,6 +456,26 @@ impl eframe::App for App {
                         actions.push(Action::GroupSelection);
                         ui.close();
                     }
+                    if ui.button("Auto layout").clicked() {
+                        actions.push(Action::AutoLayout);
+                        ui.close();
+                    }
+                    if ui.button("Auto layout selection").clicked() {
+                        actions.push(Action::AutoLayoutSelection);
+                        ui.close();
+                    }
+                    if ui.button("Collapse interfaces").clicked() {
+                        actions.push(Action::CollapseInterfaces);
+                        ui.close();
+                    }
+                    if ui.button("Expand interfaces").clicked() {
+                        actions.push(Action::ExpandInterfaces);
+                        ui.close();
+                    }
+                    if ui.button("Validate design").clicked() {
+                        actions.push(Action::Validate);
+                        ui.close();
+                    }
                     if ui.button("New empty group").clicked() {
                         actions.push(Action::NewGroup);
                         ui.close();
@@ -414,6 +489,13 @@ impl eframe::App for App {
                     ui.checkbox(&mut self.canvas.show_grid, "Grid");
                     ui.checkbox(&mut self.canvas.show_signal_names, "Signal names");
                     ui.checkbox(&mut self.console_open, "Tcl console");
+                    ui.checkbox(&mut self.canvas.show_unconnected, "Unconnected pins");
+                    if ui
+                        .checkbox(&mut self.stub_globals, "Clock/reset as stubs")
+                        .changed()
+                    {
+                        self.refresh();
+                    }
                     for (label, g) in GRID_OPTIONS {
                         ui.radio_value(&mut self.grid, g, label);
                     }
@@ -448,7 +530,9 @@ impl eframe::App for App {
                     ui,
                     &self.diagram,
                     &self.wires,
+                    &self.stubs,
                     self.canvas.highlight.as_deref(),
+                    &mut self.filter,
                 ));
             });
         let mut outcomes = Vec::new();
@@ -458,6 +542,8 @@ impl eframe::App for App {
                 wires: &self.wires,
                 junctions: &self.junctions,
                 pin_pos: &self.pin_pos,
+                pin_connected: &self.pin_ok,
+                stubs: &self.stubs,
                 signals: &self.signals,
                 grid: self.grid,
             };

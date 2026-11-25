@@ -125,13 +125,14 @@ pub fn parse_vhdl(text: &str) -> Design {
         }
         let known = ent_ports.get(&ent.to_ascii_lowercase());
         let mut ports = Vec::new();
-        let mut positional = false;
+        let (mut positional, mut acts) = (false, Vec::new());
         for assoc in split_top_level(body, ',') {
             if assoc.is_empty() {
                 continue;
             }
             let Some((formal, actual)) = assoc.split_once("=>") else {
                 positional = true;
+                acts.push(squash(assoc));
                 continue;
             };
             let formal = formal.trim();
@@ -144,9 +145,15 @@ pub fn parse_vhdl(text: &str) -> Design {
             d.warnings.push(format!(
                 "positional associations in instance {label} skipped"
             ));
+            d.positional.insert(label.clone(), acts);
         }
         d.instances.push(Instance::new(&label, &ent, ports));
     }
+
+    d.entities = entities
+        .iter()
+        .map(|(n, p)| (n.to_ascii_lowercase(), p.clone()))
+        .collect();
 
     // Top = first entity nobody instantiates, else first entity.
     let top = entities

@@ -85,8 +85,7 @@ fn save(s: &mut Session, a: &[String]) -> Result<Value, String> {
 }
 
 fn export(s: &mut Session, a: &[String]) -> Result<Value, String> {
-    std::fs::write(&a[0], crate::svg::render(&s.diagram, &s.signals))
-        .map_err(|e| format!("cannot write {}: {e}", a[0]))?;
+    crate::svg::write(std::path::Path::new(&a[0]), &s.diagram, &s.signals)?;
     Ok(Value::empty())
 }
 
@@ -248,11 +247,31 @@ fn redo(s: &mut Session, _: &[String]) -> Result<Value, String> {
     Ok(Value::empty())
 }
 
+fn validate(s: &mut Session, _: &[String]) -> Result<Value, String> {
+    Ok(list(crate::validate::validate(&s.diagram)))
+}
+
+fn interfaces(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    match a[0].as_str() {
+        "collapse" => s.edit(|d, g| {
+            crate::interface::collapse_all(d, g);
+            Ok(())
+        }),
+        "expand" => s.edit(|d, g| {
+            crate::interface::expand_all(d, g);
+            Ok(())
+        }),
+        _ => Err("usage: interfaces collapse|expand".into()),
+    }
+}
+
 /// (name, usage after the name, min args, max args, handler)
 const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     ("open", "file", 1, 1, open),
     ("save", "file.json", 1, 1, save),
-    ("export", "file.svg", 1, 1, export),
+    ("export", "file.svg|file.png", 1, 1, export),
+    ("validate", "", 0, 0, validate),
+    ("interfaces", "collapse|expand", 1, 1, interfaces),
     ("instances", "", 0, 0, instances),
     ("ports", "inst", 1, 1, ports),
     ("info", "inst", 1, 1, info),
@@ -283,6 +302,12 @@ const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     }),
     ("expand", "group", 1, 1, |s, a| {
         set_collapsed(s, &a[0], false)
+    }),
+    ("autolayout", "", 0, 0, |s, _| {
+        s.edit(|d, g| {
+            crate::layout::auto_layout(d, g);
+            Ok(())
+        })
     }),
     ("undo", "", 0, 0, undo),
     ("redo", "", 0, 0, redo),
@@ -482,5 +507,14 @@ mod tests {
         let svg = std::fs::read_to_string(&p).unwrap();
         std::fs::remove_file(&p).ok();
         assert!(svg.starts_with("<svg") && svg.contains("<line "));
+    }
+
+    #[test]
+    fn validate_and_interfaces_commands_run_and_undo() {
+        let mut s = script();
+        assert!(s.eval("validate").is_ok());
+        assert!(s.eval("interfaces collapse").is_ok());
+        assert!(s.eval("undo").is_ok(), "collapse is one undoable step");
+        assert!(s.eval("interfaces bogus").is_err());
     }
 }

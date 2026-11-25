@@ -54,7 +54,7 @@ impl Router {
             }
             match wires.get(&c) {
                 Some(s) if s.contains(sig) => 1,
-                Some(s) => 1 + s.len() as i64 * 10,
+                Some(s) => 1 + s.len() as i64 * 40,
                 None => 1,
             }
         };
