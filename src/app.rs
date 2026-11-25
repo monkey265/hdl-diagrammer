@@ -291,6 +291,21 @@ impl App {
             }),
             Action::Highlight(s) => self.canvas.highlight = s,
             Action::ToggleCollapse(i) => self.edit(|d| group::toggle_collapse(d, i, g)),
+            Action::AddToGroup(i) => {
+                let sel = self.canvas.selected.clone();
+                self.edit(|d| {
+                    group::add_to_group(d, i, &sel);
+                });
+                self.canvas.forget_indices();
+            }
+            Action::ReleaseChild(i, c) => {
+                self.edit(|d| group::release_child(d, i, c));
+                self.canvas.forget_indices();
+            }
+            Action::DeleteGroup(i) => {
+                self.edit(|d| group::delete_group(d, i));
+                self.canvas.forget_indices();
+            }
             Action::Ungroup(i) => {
                 self.edit(|d| group::ungroup(d, i));
                 self.canvas.selected.clear();
