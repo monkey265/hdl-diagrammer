@@ -107,6 +107,13 @@ impl Canvas {
             .iter()
             .map(|p| Pos2::new(p.0 as f32, p.1 as f32))
             .collect();
+        pts.extend(
+            scene
+                .wires
+                .iter()
+                .flat_map(|w| &w.segments)
+                .flat_map(|&(a, b)| [a, b].map(|p| Pos2::new(p.0 as f32, p.1 as f32))),
+        );
         for i in scene.diagram.instances.iter().filter(|i| i.visible) {
             pts.push(Pos2::new(i.x as f32, i.y as f32));
             pts.push(Pos2::new((i.x + i.width) as f32, (i.y + i.height) as f32));

@@ -22,7 +22,7 @@ pub fn class_style(c: crate::net::NetClass) -> ((u8, u8, u8), f32) {
     match c {
         Clock => (CLOCK, 1.5),
         Reset => (RESET, 1.5),
-        Bus => (BUS, 2.5),
+        Bus => (BUS, 2.0),
         Signal => (SIGNAL, 1.5),
         Undeclared => (UNDECLARED, 1.5),
     }
