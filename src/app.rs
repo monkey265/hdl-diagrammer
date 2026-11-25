@@ -50,6 +50,7 @@ pub struct App {
     recent: Vec<String>,
     script: Script,
     console_open: bool,
+    filter: String,
     console_input: String,
     console_log: Vec<String>,
 }
@@ -75,6 +76,7 @@ impl Default for App {
             recent: recent::load(),
             script: Script::new(DEFAULT_GRID),
             console_open: false,
+            filter: String::new(),
             console_input: String::new(),
             console_log: vec![],
         }
@@ -242,7 +244,7 @@ impl App {
 
     fn apply(&mut self, a: Action) {
         let g = self.grid;
-        if !matches!(a, Action::Highlight(_) | Action::Select(_)) {
+        if !matches!(a, Action::Highlight(_) | Action::Focus(_)) {
             // a stale prompt/dialog would index blocks this action may shift or remove
             (self.prompt, self.group_dialog) = (None, None);
         }
@@ -288,13 +290,39 @@ impl App {
                 edit::refit(d, i, g);
             }),
             Action::Highlight(s) => self.canvas.highlight = s,
-            Action::Select(i) => self.canvas.selected = vec![i],
             Action::ToggleCollapse(i) => self.edit(|d| group::toggle_collapse(d, i, g)),
             Action::Ungroup(i) => {
                 self.edit(|d| group::ungroup(d, i));
                 self.canvas.selected.clear();
             }
             Action::AutoLayout => self.edit(|d| crate::layout::auto_layout(d, g)),
+            Action::AutoLayoutSelection => {
+                let sel = self.canvas.selected.clone();
+                self.edit(|d| crate::layout::auto_layout_subset(d, &sel, g));
+            }
+            Action::Focus(i) => {
+                if let Some(b) = self.diagram.instances.get(i) {
+                    let (cx, cy) = (b.x + b.width / 2, b.y + b.height / 2);
+                    let vc = self.canvas.view_center;
+                    let z = self.canvas.zoom;
+                    self.canvas.pan +=
+                        eframe::egui::Vec2::new((vc.0 - cx) as f32, (vc.1 - cy) as f32) * z;
+                    self.canvas.view_center = (cx, cy);
+                    self.canvas.selected = vec![i];
+                }
+            }
+            Action::CollapseInterfaces => self.edit(|d| {
+                crate::interface::collapse_all(d, g);
+            }),
+            Action::ExpandInterfaces => self.edit(|d| crate::interface::expand_all(d, g)),
+            Action::Validate => {
+                let found = crate::validate::validate(&self.diagram);
+                self.warnings = if found.is_empty() {
+                    vec!["validate: no problems found".into()]
+                } else {
+                    found
+                };
+            }
             Action::NewGroup => {
                 let (x, y) = self.canvas.view_center;
                 let name = group::unique_group_name(&self.diagram);
@@ -432,6 +460,22 @@ impl eframe::App for App {
                         actions.push(Action::AutoLayout);
                         ui.close();
                     }
+                    if ui.button("Auto layout selection").clicked() {
+                        actions.push(Action::AutoLayoutSelection);
+                        ui.close();
+                    }
+                    if ui.button("Collapse interfaces").clicked() {
+                        actions.push(Action::CollapseInterfaces);
+                        ui.close();
+                    }
+                    if ui.button("Expand interfaces").clicked() {
+                        actions.push(Action::ExpandInterfaces);
+                        ui.close();
+                    }
+                    if ui.button("Validate design").clicked() {
+                        actions.push(Action::Validate);
+                        ui.close();
+                    }
                     if ui.button("New empty group").clicked() {
                         actions.push(Action::NewGroup);
                         ui.close();
@@ -486,7 +530,9 @@ impl eframe::App for App {
                     ui,
                     &self.diagram,
                     &self.wires,
+                    &self.stubs,
                     self.canvas.highlight.as_deref(),
+                    &mut self.filter,
                 ));
             });
         let mut outcomes = Vec::new();

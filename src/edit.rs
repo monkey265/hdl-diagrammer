@@ -160,6 +160,7 @@ mod tests {
         Diagram {
             instances: v,
             top_level_pins: vec![],
+            original_top_pins: vec![],
         }
     }
 

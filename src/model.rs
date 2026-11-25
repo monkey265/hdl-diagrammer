@@ -126,6 +126,9 @@ pub struct Diagram {
     pub instances: Vec<Instance>,
     #[serde(default)]
     pub top_level_pins: Vec<Port>,
+    /// Top pins as they were before `interface::collapse_all`; empty when not collapsed.
+    #[serde(default)]
+    pub original_top_pins: Vec<Port>,
 }
 
 impl Diagram {

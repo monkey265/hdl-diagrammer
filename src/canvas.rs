@@ -363,13 +363,22 @@ impl Canvas {
         }
 
         // wires under blocks' labels but over the grid; with a net selected, the others fade
-        let dim = self.highlight.is_some();
+        // a selected block keeps its own nets bright and fades the rest
+        let hot: Option<std::collections::HashSet<&str>> =
+            (self.highlight.is_none() && !self.selected.is_empty()).then(|| {
+                self.selected
+                    .iter()
+                    .filter_map(|&i| scene.diagram.instances.get(i))
+                    .flat_map(|i| i.ports.iter().map(|p| p.signal.as_str()))
+                    .collect()
+            });
+        let dim = self.highlight.is_some() || hot.is_some();
         let pick = |sig: &str| -> (Color32, f32) {
             if self.highlight.as_deref() == Some(sig) {
                 (rgb(HIGHLIGHT), 3.0)
             } else {
                 let (c, w) = signal_style(sig, scene.signals);
-                if dim {
+                if dim && !hot.as_ref().is_some_and(|h| h.contains(sig)) {
                     (c.gamma_multiply(0.25), w)
                 } else {
                     (c, w)

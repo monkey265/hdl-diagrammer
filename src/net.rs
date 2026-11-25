@@ -56,6 +56,9 @@ fn name_class(sig: &str) -> Option<NetClass> {
 
 /// Clock/reset by name; otherwise bus if its declared type is not a single-bit type.
 pub fn net_class(sig: &str, signals: &HashMap<String, String>) -> NetClass {
+    if sig.ends_with('*') {
+        return NetClass::Bus; // a collapsed interface (see interface.rs)
+    }
     if let Some(c) = name_class(sig) {
         return c;
     }
@@ -116,6 +119,7 @@ pub fn design_to_diagram(d: &Design, grid: i32) -> Diagram {
     let mut diagram = Diagram {
         instances: d.instances.clone(),
         top_level_pins: d.top_ports.clone(),
+        original_top_pins: vec![],
     };
     arrange_grid(&mut diagram.instances, grid);
     crate::layout::auto_layout(&mut diagram, grid);
@@ -357,6 +361,7 @@ mod tests {
         let mut d = Diagram {
             instances: vec![a, b],
             top_level_pins: vec![],
+            original_top_pins: vec![],
         };
         crate::layout::arrange_grid(&mut d.instances, 20);
         d
@@ -443,6 +448,7 @@ mod tests {
         let mut d = Diagram {
             instances: vec![mk("a", 0, Direction::Out), mk("b", 300, Direction::In)],
             top_level_pins: vec![],
+            original_top_pins: vec![],
         };
         crate::group::create_group(&mut d, "G", &[0, 1], vec![]);
         if collapsed {
@@ -531,6 +537,7 @@ mod tests {
         Diagram {
             instances: insts,
             top_level_pins: vec![],
+            original_top_pins: vec![],
         }
     }
 

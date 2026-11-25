@@ -6,6 +6,7 @@ mod gates;
 mod geometry;
 mod group;
 mod history;
+mod interface;
 mod layout;
 mod load;
 mod model;
@@ -16,6 +17,7 @@ mod router;
 mod script;
 mod svg;
 mod ui;
+mod validate;
 
 const USAGE: &str = "usage: hdl-diagrammer [file.vhd|.sv|.json] [--script file.tcl [--gui]]
   --script  run a Tcl script (headless unless --gui is also given)";

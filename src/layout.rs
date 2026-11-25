@@ -83,8 +83,37 @@ pub fn arrange_grid(instances: &mut [Instance], grid: i32) {
 /// Left-to-right layered layout: drivers left of their loads, rows ordered to cut crossings,
 /// channels widened with the number of nets crossing them. Locked blocks stay where they are.
 pub fn auto_layout(d: &mut crate::model::Diagram, grid: i32) {
+    layout_nodes(d, grid, &|_| true);
+}
+
+/// Lay out only `idxs` among themselves, keeping their top-left corner where it was
+/// (Vivado's "regenerate layout" on a selection); anything they land on is nudged aside.
+pub fn auto_layout_subset(d: &mut crate::model::Diagram, idxs: &[usize], grid: i32) {
+    let movable = |i: usize| idxs.contains(&i) && !d.instances[i].locked;
+    let mine: Vec<usize> = (0..d.instances.len()).filter(|&i| movable(i)).collect();
+    if mine.len() < 2 {
+        return;
+    }
+    let corner = |d: &crate::model::Diagram| {
+        mine.iter().fold((i32::MAX, i32::MAX), |c, &i| {
+            (c.0.min(d.instances[i].x), c.1.min(d.instances[i].y))
+        })
+    };
+    let (ox, oy) = corner(d);
+    layout_nodes(d, grid, &|i| mine.contains(&i));
+    let (nx, ny) = corner(d);
+    for &i in &mine {
+        let b = &d.instances[i];
+        crate::edit::move_block(d, i, b.x + ox - nx, b.y + oy - ny, grid);
+    }
+    for &i in &mine {
+        crate::edit::resolve_collision(d, i, grid);
+    }
+}
+
+fn layout_nodes(d: &mut crate::model::Diagram, grid: i32, pick: &dyn Fn(usize) -> bool) {
     let nodes: Vec<usize> = (0..d.instances.len())
-        .filter(|&i| d.instances[i].visible)
+        .filter(|&i| d.instances[i].visible && pick(i))
         .collect();
     let n = nodes.len();
     if n == 0 {
@@ -412,6 +441,7 @@ mod tests {
         crate::model::Diagram {
             instances: insts,
             top_level_pins: vec![],
+            original_top_pins: vec![],
         }
     }
 
@@ -472,6 +502,20 @@ mod tests {
         auto_layout(&mut d, 20);
         let g = &d.instances[0];
         assert_eq!((g.children[0].x - g.x, g.children[0].y - g.y), (30, 50));
+    }
+
+    #[test]
+    fn subset_layout_keeps_corner_and_leaves_others() {
+        let mut d = chain(4, false);
+        for (k, i) in d.instances.iter_mut().enumerate() {
+            (i.x, i.y) = (1000, 1000 + k as i32 * 300); // stacked, wrong way round for the chain
+        }
+        let other = (d.instances[3].x, d.instances[3].y);
+        auto_layout_subset(&mut d, &[0, 1, 2], 20);
+        assert_eq!((d.instances[3].x, d.instances[3].y), other);
+        assert!(d.instances[0].x < d.instances[1].x && d.instances[1].x < d.instances[2].x);
+        assert_eq!(d.instances[..3].iter().map(|i| i.x).min(), Some(1000));
+        assert!(no_overlap(&d));
     }
 
     #[test]
