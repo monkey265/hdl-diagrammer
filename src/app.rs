@@ -58,6 +58,7 @@ pub struct App {
     hist_pos: Option<usize>,
     show_structure: bool,
     show_objects: bool,
+    docks: [Dock; 3],
     views: Vec<crate::views::SavedView>,
     files: Vec<PathBuf>,
     nav: Vec<crate::script::Frame>,
@@ -71,6 +72,38 @@ pub struct App {
 }
 
 type Routed = (Vec<Wire>, Vec<Stub>, Vec<(String, Pt)>);
+
+const PANE_NAMES: [&str; 3] = ["Structure", "Objects", "Transcript"];
+
+/// Where a pane sits; the title-bar button steps through these.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dock {
+    Left,
+    Right,
+    Bottom,
+    Float,
+}
+
+impl Dock {
+    fn next(self) -> Dock {
+        match self {
+            Dock::Left => Dock::Right,
+            Dock::Right => Dock::Bottom,
+            Dock::Bottom => Dock::Float,
+            Dock::Float => Dock::Left,
+        }
+    }
+
+    /// Tooltip text for the button: where the pane goes next.
+    fn label(self) -> &'static str {
+        match self.next() {
+            Dock::Left => "dock left",
+            Dock::Right => "dock right",
+            Dock::Bottom => "dock bottom",
+            Dock::Float => "float",
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum LogKind {
@@ -117,6 +150,7 @@ impl Default for App {
             hist_pos: None,
             show_structure: true,
             show_objects: true,
+            docks: [Dock::Left, Dock::Right, Dock::Bottom],
             views: vec![],
             files: vec![],
             nav: vec![],
@@ -205,102 +239,95 @@ impl App {
         r
     }
 
-    /// Questa-style transcript docked at the bottom: warnings, echoed commands, results, prompt.
-    fn transcript_ui(&mut self, ui: &mut egui::Ui) {
-        if !self.console_open {
-            return;
-        }
+    /// Questa-style transcript: warnings, echoed commands, results and the prompt. Returns a line to run.
+    fn transcript_body(&mut self, ui: &mut egui::Ui) -> Option<String> {
         let mut run = None;
         let c = |r, g, b| egui::Color32::from_rgb(r, g, b);
-        egui::Panel::bottom("transcript")
-            .resizable(true)
-            .default_size(170.0)
-            .min_size(70.0)
+        let log_h = (ui.available_height() - 28.0).max(20.0);
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .max_height(log_h)
             .show(ui, |ui| {
-                inspector::title(ui, "Transcript");
-                let log_h = (ui.available_height() - 28.0).max(20.0);
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .max_height(log_h)
-                    .show(ui, |ui| {
-                        for w in &self.warnings {
-                            let t = format!("# ** Warning: {w}");
-                            ui.label(
-                                egui::RichText::new(t)
-                                    .monospace()
-                                    .color(c(0xFF, 0xB7, 0x4D)),
-                            );
-                        }
-                        for (k, l) in &self.console_log {
-                            let col = match k {
-                                LogKind::Echo => c(0x9C, 0xDC, 0xFE),
-                                LogKind::Out => c(0xB5, 0xF5, 0xB5),
-                                LogKind::Err => c(0xFF, 0x6B, 0x6B),
-                            };
-                            ui.label(egui::RichText::new(l).monospace().color(col));
-                        }
-                    });
-                ui.horizontal(|ui| {
+                for w in &self.warnings {
+                    let t = format!("# ** Warning: {w}");
                     ui.label(
-                        egui::RichText::new("VSIM>")
+                        egui::RichText::new(t)
                             .monospace()
-                            .strong()
-                            .color(c(0x9C, 0xDC, 0xFE)),
+                            .color(c(0xFF, 0xB7, 0x4D)),
                     );
-                    let id = egui::Id::new("transcript_input");
-                    if ui.memory(|m| m.has_focus(id)) {
-                        let key = |ui: &egui::Ui, k| {
-                            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k))
-                        };
-                        if key(ui, egui::Key::ArrowUp) && !self.console_hist.is_empty() {
-                            let at = self
-                                .hist_pos
-                                .map_or(self.console_hist.len() - 1, |p| p.saturating_sub(1));
-                            self.hist_pos = Some(at);
-                            self.console_input = self.console_hist[at].clone();
-                        }
-                        if key(ui, egui::Key::ArrowDown) {
-                            self.hist_pos = self
-                                .hist_pos
-                                .map(|p| p + 1)
-                                .filter(|&p| p < self.console_hist.len());
-                            self.console_input = self
-                                .hist_pos
-                                .map_or(String::new(), |p| self.console_hist[p].clone());
-                        }
-                        if key(ui, egui::Key::Tab) {
-                            self.complete();
-                        }
-                    }
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut self.console_input)
-                            .id(id)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("instances, rename u1 cpu, group G u1 u2 …"),
-                    );
-                    if r.has_focus() {
-                        // the TextEdit resets this every frame, so set ours after it: Tab and
-                        // Up/Down stay in the box (history, completion) instead of moving focus
-                        ui.memory_mut(|m| {
-                            m.set_focus_lock_filter(
-                                r.id,
-                                egui::EventFilter {
-                                    tab: true,
-                                    horizontal_arrows: false,
-                                    vertical_arrows: true,
-                                    escape: false,
-                                },
-                            )
-                        });
-                    }
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        run = Some(std::mem::take(&mut self.console_input));
-                        r.request_focus();
-                    }
-                });
+                }
+                for (k, l) in &self.console_log {
+                    let col = match k {
+                        LogKind::Echo => c(0x9C, 0xDC, 0xFE),
+                        LogKind::Out => c(0xB5, 0xF5, 0xB5),
+                        LogKind::Err => c(0xFF, 0x6B, 0x6B),
+                    };
+                    ui.label(egui::RichText::new(l).monospace().color(col));
+                }
             });
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("VSIM>")
+                    .monospace()
+                    .strong()
+                    .color(c(0x9C, 0xDC, 0xFE)),
+            );
+            let id = egui::Id::new("transcript_input");
+            if ui.memory(|m| m.has_focus(id)) {
+                let key =
+                    |ui: &egui::Ui, k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+                if key(ui, egui::Key::ArrowUp) && !self.console_hist.is_empty() {
+                    let at = self
+                        .hist_pos
+                        .map_or(self.console_hist.len() - 1, |p| p.saturating_sub(1));
+                    self.hist_pos = Some(at);
+                    self.console_input = self.console_hist[at].clone();
+                }
+                if key(ui, egui::Key::ArrowDown) {
+                    self.hist_pos = self
+                        .hist_pos
+                        .map(|p| p + 1)
+                        .filter(|&p| p < self.console_hist.len());
+                    self.console_input = self
+                        .hist_pos
+                        .map_or(String::new(), |p| self.console_hist[p].clone());
+                }
+                if key(ui, egui::Key::Tab) {
+                    self.complete();
+                }
+            }
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.console_input)
+                    .id(id)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("instances, rename u1 cpu, group G u1 u2 …"),
+            );
+            if r.has_focus() {
+                // the TextEdit resets this every frame, so set ours after it: Tab and
+                // Up/Down stay in the box (history, completion) instead of moving focus
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        r.id,
+                        egui::EventFilter {
+                            tab: true,
+                            horizontal_arrows: false,
+                            vertical_arrows: true,
+                            escape: false,
+                        },
+                    )
+                });
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                run = Some(std::mem::take(&mut self.console_input));
+                r.request_focus();
+            }
+        });
+        run
+    }
+
+    fn run_line(&mut self, run: Option<String>) {
         if let Some(line) = run.filter(|l| !l.trim().is_empty()) {
             self.console_log
                 .push((LogKind::Echo, format!("VSIM> {line}")));
@@ -399,6 +426,46 @@ impl App {
     fn persist_views(&self) {
         if let Some(p) = &self.path {
             crate::views::save(p, &self.views);
+        }
+    }
+
+    fn pane_shown(&self, p: usize) -> bool {
+        [self.show_structure, self.show_objects, self.console_open][p]
+    }
+
+    /// One dockable pane: a blue title bar whose button moves it to the next place, then its body.
+    fn pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: usize,
+        actions: &mut Vec<Action>,
+        run: &mut Option<String>,
+    ) {
+        let name = if p == 0 && !self.crumb().is_empty() {
+            format!("Structure — {}", self.crumb())
+        } else {
+            PANE_NAMES[p].to_string()
+        };
+        if inspector::header(ui, &name, self.docks[p].label()) {
+            self.docks[p] = self.docks[p].next();
+        }
+        match p {
+            0 => actions.extend(inspector::structure(
+                ui,
+                &self.diagram,
+                &self.canvas.selected,
+                &mut self.filter,
+            )),
+            1 => actions.extend(inspector::objects(
+                ui,
+                &self.diagram,
+                &self.canvas.selected,
+                &self.wires,
+                &self.stubs,
+                self.canvas.highlight.as_deref(),
+                &self.filter,
+            )),
+            _ => *run = self.transcript_body(ui),
         }
     }
 
@@ -873,36 +940,39 @@ impl eframe::App for App {
         if let Some(p) = open {
             self.open_file(&p);
         }
-        self.transcript_ui(ui);
-        let crumb = self.crumb();
-        if self.show_structure {
-            egui::Panel::left("structure")
-                .default_size(220.0)
-                .show(ui, |ui| {
-                    actions.extend(inspector::structure(
-                        ui,
-                        &crumb,
-                        &self.diagram,
-                        &self.canvas.selected,
-                        &mut self.filter,
-                    ));
-                });
+        let mut run = None;
+        for region in [Dock::Left, Dock::Right, Dock::Bottom] {
+            let panes: Vec<usize> = (0..3)
+                .filter(|&p| self.docks[p] == region && self.pane_shown(p))
+                .collect();
+            if panes.is_empty() {
+                continue;
+            }
+            let panel = match region {
+                Dock::Left => egui::Panel::left("dock_left").default_size(230.0),
+                Dock::Right => egui::Panel::right("dock_right").default_size(240.0),
+                _ => egui::Panel::bottom("dock_bottom")
+                    .default_size(170.0)
+                    .min_size(70.0),
+            };
+            panel.resizable(true).show(ui, |ui| {
+                let share = ui.available_height() / panes.len() as f32;
+                for &p in &panes {
+                    ui.allocate_ui(egui::vec2(ui.available_width(), share), |ui| {
+                        self.pane(ui, p, &mut actions, &mut run);
+                    });
+                }
+            });
         }
-        if self.show_objects {
-            egui::Panel::right("objects")
-                .default_size(240.0)
-                .show(ui, |ui| {
-                    actions.extend(inspector::objects(
-                        ui,
-                        &self.diagram,
-                        &self.canvas.selected,
-                        &self.wires,
-                        &self.stubs,
-                        self.canvas.highlight.as_deref(),
-                        &self.filter,
-                    ));
-                });
+        for (p, name) in PANE_NAMES.iter().enumerate() {
+            if self.docks[p] == Dock::Float && self.pane_shown(p) {
+                egui::Window::new(*name)
+                    .title_bar(false)
+                    .default_size([300.0, 320.0])
+                    .show(ui.ctx(), |ui| self.pane(ui, p, &mut actions, &mut run));
+            }
         }
+        self.run_line(run);
         let mut outcomes = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
             let mut view = View {
