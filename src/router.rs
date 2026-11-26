@@ -6,7 +6,16 @@ pub type Bounds = (i32, i32, i32, i32); // xmin, xmax, ymin, ymax
 pub type Occupancy = HashMap<Pt, bool>;
 pub type WireOcc = HashMap<Pt, HashSet<String>>;
 
+/// Cells used by routed wires, split by direction: sharing a cell in the same direction is an
+/// overlap (expensive); crossing it at right angles is cheap.
+#[derive(Default)]
+pub struct DirOcc {
+    pub h: WireOcc,
+    pub v: WireOcc,
+}
+
 const BLOCKED: i64 = 1_000_000;
+const CROSSING: i64 = 3;
 
 pub struct Router {
     pub grid_step: i32,
@@ -41,22 +50,32 @@ impl Router {
         start: Pt,
         goal: Pt,
         occ: &Occupancy,
-        wires: &WireOcc,
+        wires: &DirOcc,
         sig: &str,
         b: Bounds,
     ) -> Option<Vec<Pt>> {
         let (xmin, xmax, ymin, ymax) = b;
         let h =
             |a: Pt| ((a.0 - goal.0).abs() + (a.1 - goal.1).abs()) as i64 / self.grid_step as i64; // cells, so A* stays admissible
-        let cost = |c: Pt| -> i64 {
+        let cost = |c: Pt, horizontal: bool| -> i64 {
             if occ.get(&c).copied().unwrap_or(true) {
                 return BLOCKED;
             }
-            match wires.get(&c) {
-                Some(s) if s.contains(sig) => 1,
-                Some(s) => 1 + s.len() as i64 * 40,
-                None => 1,
+            let (same, cross) = if horizontal {
+                (&wires.h, &wires.v)
+            } else {
+                (&wires.v, &wires.h)
+            };
+            let mut k = 1;
+            if let Some(s) = same.get(&c)
+                && !s.contains(sig)
+            {
+                k += s.len() as i64 * 40; // running on top of another net
             }
+            if cross.get(&c).is_some_and(|s| s.iter().any(|x| x != sig)) {
+                k += CROSSING; // crossing another net
+            }
+            k
         };
         let mut open = BinaryHeap::new();
         open.push(Reverse((h(start), 0i64, start)));
@@ -87,7 +106,7 @@ impl Router {
                 if n.0 < xmin || n.0 > xmax || n.1 < ymin || n.1 > ymax || closed.contains(&n) {
                     continue;
                 }
-                let c = cost(n);
+                let c = cost(n, n.1 == cur.1);
                 if c >= BLOCKED {
                     continue;
                 }
@@ -131,7 +150,7 @@ impl Router {
         start: Pt,
         goal: Pt,
         occ: &Occupancy,
-        wires: &WireOcc,
+        wires: &DirOcc,
         sig: &str,
         b: Bounds,
     ) -> Vec<Pt> {
@@ -167,7 +186,7 @@ mod tests {
     fn find_path_around_block() {
         let occ = r().build_occupancy(&[(80, 20, 20, 60)], B, 0);
         let p = r()
-            .find_path((20, 50), (160, 50), &occ, &WireOcc::new(), "a", B)
+            .find_path((20, 50), (160, 50), &occ, &DirOcc::default(), "a", B)
             .unwrap();
         assert_eq!((p[0], *p.last().unwrap()), ((20, 50), (160, 50)));
         assert!(p.iter().all(|c| !occ[c]));
@@ -176,17 +195,17 @@ mod tests {
     #[test]
     fn find_path_reuses_same_signal() {
         let occ = r().build_occupancy(&[], B, 0);
-        let mut w = WireOcc::new();
+        let mut w = DirOcc::default();
         for x in (0..=100).step_by(10) {
-            w.entry((x, 0)).or_default().insert("a".into());
+            w.h.entry((x, 0)).or_default().insert("a".into());
         }
         // from (0,50) to (100,50): detour via own wire at y=0 costs more than straight (1/cell), so straight wins
         let p = r().find_path((0, 50), (100, 50), &occ, &w, "a", B).unwrap();
         assert!(p.iter().all(|c| c.1 == 50));
         // but another signal's wire in the straight line is avoided
-        let mut w2 = WireOcc::new();
+        let mut w2 = DirOcc::default();
         for x in (0..=100).step_by(10) {
-            w2.entry((x, 50)).or_default().insert("other".into());
+            w2.h.entry((x, 50)).or_default().insert("other".into());
         }
         let p2 = r()
             .find_path((0, 50), (100, 50), &occ, &w2, "a", B)
@@ -209,7 +228,7 @@ mod tests {
         );
         let g = r().free_cell((100, 50), &occ);
         assert!(
-            r().find_path((10, 50), g, &occ, &WireOcc::new(), "a", B)
+            r().find_path((10, 50), g, &occ, &DirOcc::default(), "a", B)
                 .is_none()
         );
     }
@@ -218,10 +237,10 @@ mod tests {
     fn start_inside_margin_still_routes() {
         let occ = r().build_occupancy(&[(80, 20, 40, 60)], B, 30);
         assert!(occ[&(80, 50)]); // pin on block edge is blocked by the margin
-        let poly = r().route_net((80, 50), (180, 50), &occ, &WireOcc::new(), "a", B);
+        let poly = r().route_net((80, 50), (180, 50), &occ, &DirOcc::default(), "a", B);
         assert_eq!((poly[0], *poly.last().unwrap()), ((80, 50), (180, 50)));
         // unreachable goal still yields a polyline instead of looping or panicking
-        let poly2 = r().route_net((80, 50), (900, 900), &occ, &WireOcc::new(), "a", B);
+        let poly2 = r().route_net((80, 50), (900, 900), &occ, &DirOcc::default(), "a", B);
         assert!(poly2.len() >= 2);
     }
 }

@@ -9,6 +9,16 @@ use molt::types::{ContextID, Exception, MoltResult, Value};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// A diagram left behind by `descend`, restored by `ascend`.
+#[derive(Default)]
+pub struct Frame {
+    pub diagram: Diagram,
+    pub signals: HashMap<String, String>,
+    pub warnings: Vec<String>,
+    pub history: History<Diagram>,
+    pub top: String,
+}
+
 /// Everything the commands act on. The GUI lends its state to a `Session` for each console line.
 #[derive(Default)]
 pub struct Session {
@@ -17,6 +27,14 @@ pub struct Session {
     pub warnings: Vec<String>,
     pub grid: i32,
     pub history: History<Diagram>,
+    /// Source files entities are looked up in, the levels above the current diagram, its top name.
+    pub files: Vec<std::path::PathBuf>,
+    pub nav: Vec<Frame>,
+    pub top: String,
+    /// Saved views; `view_now` is the canvas (pan x, pan y, zoom) lent in, `goto` the one asked for.
+    pub views: Vec<crate::views::SavedView>,
+    pub view_now: (f32, f32, f32),
+    pub goto: Option<(f32, f32, f32)>,
     /// Text from `puts` since the last `eval`, shown in the GUI transcript.
     pub output: Vec<String>,
     /// Set by `open`; the GUI reacts by refitting the view and dropping its selection.
@@ -74,11 +92,133 @@ impl Session {
 }
 
 fn open(s: &mut Session, a: &[String]) -> Result<Value, String> {
-    let l = crate::load::load(Path::new(&a[0]), s.grid)?;
+    let l = crate::load::load_with(Path::new(&a[0]), s.grid, a.get(1).map(String::as_str), None)?;
     (s.diagram, s.signals, s.warnings) = (l.diagram, l.signals, l.warnings);
+    (s.files, s.top) = (l.files, l.top);
+    s.nav.clear();
     s.history.clear();
     s.opened = true;
     Ok(Value::from(s.diagram.instances.len() as i64))
+}
+
+/// Open the diagram of an instance's entity (found in the project files); `ascend` comes back.
+fn descend(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let i = find(&s.diagram, &a[0])?;
+    let entity = s.diagram.instances[i].entity.clone();
+    let lib = crate::parser::library(&s.files);
+    let file = lib
+        .file_of
+        .get(&entity.to_ascii_lowercase())
+        .ok_or_else(|| format!("no source found for entity \"{entity}\" in the project files"))?
+        .clone();
+    let l = crate::load::load_with(&file, s.grid, Some(&entity), Some(&s.files))?;
+    s.nav.push(Frame {
+        diagram: std::mem::replace(&mut s.diagram, l.diagram),
+        signals: std::mem::replace(&mut s.signals, l.signals),
+        warnings: std::mem::replace(&mut s.warnings, l.warnings),
+        history: std::mem::take(&mut s.history),
+        top: std::mem::replace(&mut s.top, l.top),
+    });
+    s.opened = true;
+    Ok(Value::from(entity))
+}
+
+fn ascend(s: &mut Session, _: &[String]) -> Result<Value, String> {
+    let f = s.nav.pop().ok_or("already at the top level")?;
+    (s.diagram, s.signals, s.warnings, s.history, s.top) =
+        (f.diagram, f.signals, f.warnings, f.history, f.top);
+    s.opened = true;
+    Ok(Value::empty())
+}
+
+fn view(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let find = |s: &Session, n: &str| {
+        s.views
+            .iter()
+            .position(|v| v.name == n)
+            .ok_or_else(|| format!("no saved view \"{n}\""))
+    };
+    match (a[0].as_str(), a.get(1)) {
+        ("list", None) => Ok(list(s.views.iter().map(|v| v.name.clone()))),
+        ("save", Some(n)) => {
+            let (x, y, zoom) = s.view_now;
+            crate::views::put(
+                &mut s.views,
+                crate::views::SavedView {
+                    name: n.clone(),
+                    pan: (x, y),
+                    zoom,
+                },
+            );
+            Ok(Value::empty())
+        }
+        ("goto", Some(n)) => {
+            let v = &s.views[find(s, n)?];
+            s.goto = Some((v.pan.0, v.pan.1, v.zoom));
+            Ok(Value::empty())
+        }
+        ("delete", Some(n)) => {
+            let i = find(s, n)?;
+            s.views.remove(i);
+            Ok(Value::empty())
+        }
+        _ => Err("usage: view list | view save|goto|delete name".into()),
+    }
+}
+
+/// `inst.port` or `pin:name`.
+fn endpoint(d: &Diagram, text: &str) -> Result<crate::net::Ep, String> {
+    use crate::net::Ep;
+    if let Some(n) = text.strip_prefix("pin:") {
+        return d
+            .top_level_pins
+            .iter()
+            .position(|p| p.name == n)
+            .map(Ep::Top)
+            .ok_or_else(|| format!("no top-level pin \"{n}\""));
+    }
+    let (inst, port) = text
+        .rsplit_once('.')
+        .ok_or_else(|| format!("expected inst.port or pin:name but got \"{text}\""))?;
+    let i = find(d, inst)?;
+    let p = d.instances[i]
+        .ports
+        .iter()
+        .position(|p| p.name == port)
+        .ok_or_else(|| format!("\"{inst}\" has no port \"{port}\""))?;
+    Ok(Ep::Inst { inst: i, port: p })
+}
+
+fn connect(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let (x, y) = (endpoint(&s.diagram, &a[0])?, endpoint(&s.diagram, &a[1])?);
+    let mut net = String::new();
+    s.edit(|d, _| {
+        net = edit::connect(d, x, y)?;
+        Ok(())
+    })?;
+    Ok(Value::from(net))
+}
+
+fn disconnect(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let e = endpoint(&s.diagram, &a[0])?;
+    s.edit(|d, _| {
+        edit::disconnect(d, e);
+        Ok(())
+    })
+}
+
+fn exporthdl(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let name = if s.top.is_empty() { "top" } else { &s.top };
+    let sv = ["sv", "v"]
+        .iter()
+        .any(|e| a[0].to_ascii_lowercase().ends_with(e));
+    let text = if sv {
+        crate::hdlgen::to_sv(&s.diagram, &s.signals, name)
+    } else {
+        crate::hdlgen::to_vhdl(&s.diagram, &s.signals, name)
+    };
+    std::fs::write(&a[0], text).map_err(|e| format!("cannot write {}: {e}", a[0]))?;
+    Ok(Value::empty())
 }
 
 fn save(s: &mut Session, a: &[String]) -> Result<Value, String> {
@@ -285,7 +425,19 @@ pub fn command_names() -> impl Iterator<Item = &'static str> {
 
 /// (name, usage after the name, min args, max args, handler)
 const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
-    ("open", "file", 1, 1, open),
+    ("open", "file ?top?", 1, 2, open),
+    (
+        "connect",
+        "inst.port|pin:name inst.port|pin:name",
+        2,
+        2,
+        connect,
+    ),
+    ("disconnect", "inst.port|pin:name", 1, 1, disconnect),
+    ("exporthdl", "file.vhd|file.sv", 1, 1, exporthdl),
+    ("view", "list|save|goto|delete ?name?", 1, 2, view),
+    ("descend", "inst", 1, 1, descend),
+    ("ascend", "", 0, 0, ascend),
     ("save", "file.json", 1, 1, save),
     ("export", "file.svg|file.png", 1, 1, export),
     ("puts", "string", 1, 2, puts),
@@ -613,5 +765,104 @@ mod tests {
             "hello\nthere\n2"
         );
         assert!(s.eval("puts a b c").is_err());
+    }
+
+    fn project(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("hdl_proj_{tag}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = |n: &str, t: &str| std::fs::write(dir.join(n), t).unwrap();
+        w(
+            "top.vhd",
+            "entity top is port (a : in std_logic; q : out std_logic); end entity;
+architecture x of top is signal m : std_logic; begin
+ u_mid : entity work.mid port map (i => a, o => m);
+ u_out : entity work.leaf port map (i => m, o => q);
+end;",
+        );
+        w(
+            "mid.vhd",
+            "entity mid is port (i : in std_logic; o : out std_logic); end entity;
+architecture x of mid is begin u_leaf : entity work.leaf port map (i => i, o => o); end;",
+        );
+        w(
+            "leaf.vhd",
+            "entity leaf is port (i : in std_logic; o : out std_logic); end entity;",
+        );
+        dir
+    }
+
+    #[test]
+    fn descend_and_ascend_through_a_project() {
+        let dir = project("nav");
+        let mut s = Script::new(20);
+        s.eval(&format!("open {}/top.vhd", dir.display())).unwrap();
+        assert_eq!(s.eval("instances").unwrap(), "u_mid u_out");
+        assert_eq!(s.eval("descend u_mid").unwrap(), "mid");
+        assert_eq!(
+            s.eval("instances").unwrap(),
+            "u_leaf",
+            "mid's own instances, not top's"
+        );
+        assert!(s.eval("descend u_leaf").is_ok());
+        assert!(s.eval("descend nope").is_err());
+        s.eval("ascend").unwrap();
+        s.eval("ascend").unwrap();
+        assert_eq!(s.eval("instances").unwrap(), "u_mid u_out");
+        assert!(s.eval("ascend").is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn filelist_projects_pick_the_top_automatically_or_by_name() {
+        let dir = project("f");
+        std::fs::write(
+            dir.join("p.f"),
+            "# project\nleaf.vhd\nmid.vhd // sub\ntop.vhd\n",
+        )
+        .unwrap();
+        let mut s = Script::new(20);
+        s.eval(&format!("open {}/p.f", dir.display())).unwrap();
+        assert_eq!(
+            s.eval("instances").unwrap(),
+            "u_mid u_out",
+            "top is the uninstantiated entity"
+        );
+        s.eval(&format!("open {}/p.f mid", dir.display())).unwrap();
+        assert_eq!(s.eval("instances").unwrap(), "u_leaf");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn view_commands_save_goto_delete() {
+        let mut s = script();
+        s.session().view_now = (10.0, 20.0, 1.5);
+        s.eval("view save a").unwrap();
+        s.session().view_now = (0.0, 0.0, 1.0);
+        s.eval("view save b").unwrap();
+        assert_eq!(s.eval("view list").unwrap(), "a b");
+        s.eval("view goto a").unwrap();
+        assert_eq!(s.session().goto, Some((10.0, 20.0, 1.5)));
+        s.eval("view delete a").unwrap();
+        assert_eq!(s.eval("view list").unwrap(), "b");
+        assert!(s.eval("view goto a").is_err());
+        assert!(s.eval("view").is_err());
+    }
+
+    #[test]
+    fn connect_disconnect_and_hdl_export_commands() {
+        let mut s = script();
+        let first = names(&mut s)[0].clone();
+        let p0 = s.session().diagram.instances[0].ports[0].name.clone();
+        let pin = s.session().diagram.top_level_pins[0].name.clone();
+        let net = s.eval(&format!("connect {first}.{p0} pin:{pin}")).unwrap();
+        assert!(!net.is_empty());
+        s.eval(&format!("disconnect {first}.{p0}")).unwrap();
+        assert!(s.eval("connect nope.x pin:y").is_err());
+        assert!(s.eval("connect junk junk").is_err());
+        let f = std::env::temp_dir().join(format!("hdl_exp_{}.vhd", std::process::id()));
+        s.eval(&format!("exporthdl {}", f.display())).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        std::fs::remove_file(f).ok();
+        assert!(text.contains("entity ") && text.contains("port map"));
     }
 }

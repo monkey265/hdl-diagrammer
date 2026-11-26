@@ -1,6 +1,7 @@
 use crate::geometry::snap;
 use crate::layout::port_pos;
 use crate::model::Diagram;
+use crate::net::Ep;
 
 fn shift(i: &mut crate::model::Instance, dx: i32, dy: i32) {
     i.x += dx;
@@ -90,6 +91,98 @@ pub fn hit_port(d: &Diagram, p: (f32, f32), radius: f32) -> Option<(usize, usize
         }
     }
     best.map(|(_, k)| k)
+}
+
+fn live(sig: &str) -> bool {
+    !sig.is_empty() && !sig.eq_ignore_ascii_case("open")
+}
+
+fn signal_mut(d: &mut Diagram, e: Ep) -> Option<&mut String> {
+    match e {
+        Ep::Inst { inst, port } => d
+            .instances
+            .get_mut(inst)?
+            .ports
+            .get_mut(port)
+            .map(|p| &mut p.signal),
+        Ep::Top(k) => d.top_level_pins.get_mut(k).map(|p| &mut p.signal),
+    }
+}
+
+fn each_signal(d: &mut Diagram, f: &mut dyn FnMut(&mut String)) {
+    fn walk(list: &mut [crate::model::Instance], f: &mut dyn FnMut(&mut String)) {
+        for i in list {
+            i.ports.iter_mut().for_each(|p| f(&mut p.signal));
+            walk(&mut i.children, f);
+        }
+    }
+    walk(&mut d.instances, f);
+    d.top_level_pins.iter_mut().for_each(|p| f(&mut p.signal));
+}
+
+/// Join two pins on one net and return its name. A pin that already has a signal lends it to the
+/// other; if both have one, the second net is renamed to the first (the nets merge).
+pub fn connect(d: &mut Diagram, a: Ep, b: Ep) -> Result<String, String> {
+    if a == b {
+        return Err("cannot connect a pin to itself".into());
+    }
+    let sa = signal_mut(d, a).ok_or("no such pin")?.clone();
+    let sb = signal_mut(d, b).ok_or("no such pin")?.clone();
+    // a top-level pin's signal is the port's own name: it wins over an internal net name
+    let (sa, sb, a, b) = if matches!(b, Ep::Top(_)) && live(&sb) && !matches!(a, Ep::Top(_)) {
+        (sb, sa, b, a)
+    } else {
+        (sa, sb, a, b)
+    };
+    let name = if live(&sa) {
+        sa.clone()
+    } else if live(&sb) {
+        sb.clone()
+    } else {
+        let mut used = std::collections::HashSet::new();
+        each_signal(d, &mut |s| {
+            used.insert(s.clone());
+        });
+        (1..)
+            .map(|n| format!("net_{n}"))
+            .find(|n| !used.contains(n))
+            .expect("infinite range")
+    };
+    if live(&sa) && live(&sb) && sa != sb {
+        each_signal(d, &mut |s| {
+            if *s == sb {
+                s.clone_from(&name);
+            }
+        });
+    }
+    for e in [a, b] {
+        if let Some(s) = signal_mut(d, e) {
+            s.clone_from(&name);
+        }
+    }
+    Ok(name)
+}
+
+/// Detach a pin from its net (the net keeps its other pins).
+pub fn disconnect(d: &mut Diagram, e: Ep) {
+    if let Some(s) = signal_mut(d, e) {
+        s.clear();
+    }
+}
+
+/// Nearest top-level pin within `radius` of `p`.
+pub fn hit_pin(pins: &[(i32, i32)], p: (f32, f32), radius: f32) -> Option<usize> {
+    pins.iter()
+        .enumerate()
+        .map(|(k, &(x, y))| {
+            (
+                k,
+                ((x as f32 - p.0).powi(2) + (y as f32 - p.1).powi(2)).sqrt(),
+            )
+        })
+        .filter(|&(_, dist)| dist <= radius)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(k, _)| k)
 }
 
 pub fn set_visible(d: &mut Diagram, idx: usize, visible: bool) {
@@ -320,5 +413,57 @@ mod tests {
         }
         refit(&mut d, 0, 20);
         assert!(d.instances[0].height > auto.1);
+    }
+
+    #[test]
+    fn connect_names_merges_and_disconnects() {
+        use crate::model::{Direction, Instance, Port};
+        let mk = |n: &str, sig: &str| {
+            Instance::new(
+                n,
+                "E",
+                vec![
+                    Port::new("o", Direction::Out, sig),
+                    Port::new("i", Direction::In, sig),
+                ],
+            )
+        };
+        let mut d = Diagram {
+            instances: vec![mk("a", ""), mk("b", ""), mk("c", "x"), mk("e", "y")],
+            top_level_pins: vec![Port::new("p", Direction::In, "")],
+            ..Default::default()
+        };
+        let pin = |i, p| Ep::Inst { inst: i, port: p };
+        assert_eq!(connect(&mut d, pin(0, 0), pin(1, 1)).unwrap(), "net_1");
+        assert_eq!(d.instances[1].ports[1].signal, "net_1");
+        assert_eq!(connect(&mut d, pin(2, 0), pin(0, 1)).unwrap(), "x"); // a.i joins existing net x
+        assert_eq!(connect(&mut d, pin(2, 0), pin(3, 0)).unwrap(), "x"); // x and y merge: y becomes x
+        assert_eq!(d.instances[3].ports[1].signal, "x");
+        assert_eq!(connect(&mut d, Ep::Top(0), pin(2, 1)).unwrap(), "x");
+        assert_eq!(d.top_level_pins[0].signal, "x");
+        assert!(connect(&mut d, pin(0, 0), pin(0, 0)).is_err());
+        assert!(connect(&mut d, pin(9, 0), pin(0, 0)).is_err());
+        disconnect(&mut d, pin(2, 0));
+        assert_eq!(d.instances[2].ports[0].signal, "");
+        assert_eq!(hit_pin(&[(0, 0), (100, 0)], (98.0, 2.0), 8.0), Some(1));
+        assert_eq!(hit_pin(&[(0, 0)], (50.0, 50.0), 8.0), None);
+    }
+
+    #[test]
+    fn merging_into_a_top_pin_keeps_the_port_name() {
+        use crate::model::{Direction, Instance, Port};
+        let mut d = Diagram {
+            instances: vec![Instance::new(
+                "u",
+                "E",
+                vec![Port::new("p", Direction::In, "internal")],
+            )],
+            top_level_pins: vec![Port::new("clkin", Direction::In, "clkin")],
+            ..Default::default()
+        };
+        let name = connect(&mut d, Ep::Inst { inst: 0, port: 0 }, Ep::Top(0)).unwrap();
+        assert_eq!(name, "clkin");
+        assert_eq!(d.instances[0].ports[0].signal, "clkin");
+        assert_eq!(d.top_level_pins[0].signal, "clkin");
     }
 }

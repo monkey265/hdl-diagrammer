@@ -364,7 +364,13 @@ fn parse_modules(src: &str) -> Vec<Module> {
     mods
 }
 
+#[cfg(test)]
 pub fn parse_sv(text: &str) -> Design {
+    parse_sv_top(text, None)
+}
+
+/// Parse with module `want` as the top (default: the first module nobody instantiates).
+pub fn parse_sv_top(text: &str, want: Option<&str>) -> Design {
     let mut d = Design::default();
     let stripped = strip_comments_sv(text);
     let directive = Regex::new(r"(?m)^[ \t]*`[^\n]*").unwrap();
@@ -372,7 +378,7 @@ pub fn parse_sv(text: &str) -> Design {
         d.warnings
             .push("preprocessor directives ignored; macros are not expanded".into());
     }
-    let src = directive.replace_all(&stripped, "").into_owned();
+    let (src, loops) = super::generate::expand_sv(&directive.replace_all(&stripped, ""));
     let mods = parse_modules(&src);
     if mods.is_empty() {
         d.warnings.push("no module found".into());
@@ -384,8 +390,13 @@ pub fn parse_sv(text: &str) -> Design {
         .collect();
     let instantiated = |n: &str| mods.iter().any(|m| m.raws.iter().any(|r| r.module == n));
     let tops: Vec<&Module> = mods.iter().filter(|m| !instantiated(&m.name)).collect();
-    let top = tops.first().copied().unwrap_or(&mods[0]);
-    if tops.len() > 1 {
+    let named = want.and_then(|w| mods.iter().find(|m| m.name.eq_ignore_ascii_case(w)));
+    if let (Some(w), None) = (want, named) {
+        d.warnings
+            .push(format!("module {w} not found in this file"));
+    }
+    let top = named.or(tops.first().copied()).unwrap_or(&mods[0]);
+    if want.is_none() && tops.len() > 1 {
         d.warnings.push(format!(
             "{} modules are never instantiated; using {}",
             tops.len(),
@@ -443,6 +454,7 @@ pub fn parse_sv(text: &str) -> Design {
         d.instances
             .push(Instance::new(&raw.label, &raw.module, ports));
     }
+    super::generate::rename_copies(&mut d, &loops, '[', ']');
     d
 }
 
@@ -564,10 +576,17 @@ mod tests {
     }
 
     #[test]
-    fn generate_instance_warns_but_listed() {
+    fn for_generate_is_expanded_and_if_generate_warns() {
         let d = parse_sv(SAMPLE);
-        inst(&d, "u_gen");
-        assert!(d.warnings.iter().any(|w| w.contains("generate")));
+        inst(&d, "u_gen[0]");
+        inst(&d, "u_gen[1]");
+        let d = parse_sv("module t (input a); if (A) begin : g sub u (.i(a)); end endmodule");
+        inst(&d, "u");
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.contains("generate") || w.contains("conditional"))
+        );
     }
 
     #[test]

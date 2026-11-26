@@ -5,6 +5,7 @@ mod edit;
 mod gates;
 mod geometry;
 mod group;
+mod hdlgen;
 mod history;
 mod interface;
 mod layout;
@@ -18,6 +19,7 @@ mod script;
 mod svg;
 mod ui;
 mod validate;
+mod views;
 
 const USAGE: &str = "usage: hdl-diagrammer [file.vhd|.sv|.json] [--script file.tcl [--gui]]
   --script  run a Tcl script (headless unless --gui is also given)";
@@ -68,6 +70,11 @@ fn main() -> eframe::Result {
             viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
             ..Default::default()
         },
-        Box::new(move |_cc| Ok(Box::new(app))),
+        Box::new(move |_cc| {
+            let mut app = app;
+            app.async_route = true;
+            app.refresh();
+            Ok(Box::new(app))
+        }),
     )
 }

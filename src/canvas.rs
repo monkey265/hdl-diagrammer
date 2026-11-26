@@ -4,7 +4,7 @@ use crate::gates::gate_kind;
 use crate::geometry::Pt;
 use crate::layout::port_pos;
 use crate::model::{Diagram, Direction, Instance};
-use crate::net::{Stub, Wire, net_class};
+use crate::net::{Ep, Stub, Wire, net_class};
 use crate::ui::Action;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::collections::HashMap;
@@ -53,6 +53,8 @@ pub struct Canvas {
     /// World coordinates of the middle of the view (where new groups appear).
     pub view_center: (i32, i32),
     drag: Option<Drag>,
+    /// Dragging from a pin to draw a connection: where it started, where the pointer is.
+    wiring: Option<(Ep, (f32, f32))>,
     panning: bool,
     target: Option<Target>,
 }
@@ -71,6 +73,7 @@ impl Default for Canvas {
             highlight: None,
             view_center: (100, 100),
             drag: None,
+            wiring: None,
             panning: false,
             target: None,
         }
@@ -212,7 +215,22 @@ impl Canvas {
             .interact_pointer_pos()
             .map(|p| to_w(p, self.pan, self.zoom));
 
-        if resp.drag_started_by(egui::PointerButton::Primary) {
+        let pin_radius = 8.0 / self.zoom.min(1.0);
+        let pin_at = |d: &Diagram, pins: &[Pt], w: (f32, f32)| -> Option<Ep> {
+            edit::hit_port(d, w, pin_radius)
+                .map(|(inst, port)| Ep::Inst { inst, port })
+                .or_else(|| edit::hit_pin(pins, w, pin_radius).map(Ep::Top))
+        };
+        // the pointer has already moved a little when a drag is reported: test the pin where it was pressed
+        let press = ui
+            .input(|i| i.pointer.press_origin())
+            .map(|p| to_w(p, self.pan, self.zoom));
+        if resp.drag_started_by(egui::PointerButton::Primary)
+            && let Some((ep, w)) =
+                press.and_then(|w| Some((pin_at(scene.diagram, scene.pin_pos, w)?, w)))
+        {
+            self.wiring = Some((ep, w));
+        } else if resp.drag_started_by(egui::PointerButton::Primary) {
             let hit = ptr_world.and_then(|w| edit::hit_block(scene.diagram, w));
             match (hit, ptr_world) {
                 (Some(i), Some(w)) => {
@@ -257,8 +275,17 @@ impl Canvas {
             }
             drag.moved |= dx != 0 || dy != 0;
         }
+        if let (Some(wiring), Some(w)) = (self.wiring.as_mut(), ptr_world) {
+            wiring.1 = w;
+        }
         if resp.drag_stopped() {
             self.panning = false;
+            if let Some((from, _)) = self.wiring.take()
+                && let Some(to) = ptr_world.and_then(|w| pin_at(scene.diagram, scene.pin_pos, w))
+                && to != from
+            {
+                out.push(Outcome::Do(Action::Connect(from, to)));
+            }
             if let Some(drag) = self.drag.take().filter(|d| d.moved) {
                 for &(k, _, _) in &drag.origins {
                     edit::resolve_collision(scene.diagram, k, scene.grid);
@@ -310,6 +337,13 @@ impl Canvas {
                     out.push(Outcome::Do(Action::RenamePort(*i, *p)));
                     ui.close();
                 }
+                if ui.button("Disconnect").clicked() {
+                    out.push(Outcome::Do(Action::Disconnect(Ep::Inst {
+                        inst: *i,
+                        port: *p,
+                    })));
+                    ui.close();
+                }
                 if ui.button("Delete port").clicked() {
                     out.push(Outcome::Do(Action::DeletePort(*i, *p)));
                     ui.close();
@@ -346,6 +380,10 @@ impl Canvas {
                     .clicked()
                 {
                     out.push(Outcome::Do(Action::ToggleLock(i)));
+                    ui.close();
+                }
+                if !inst.is_group && ui.button("Descend into").clicked() {
+                    out.push(Outcome::Do(Action::Descend(i)));
                     ui.close();
                 }
                 if ui.button("Reset ports").clicked() {
@@ -504,6 +542,22 @@ impl Canvas {
 
         for (ii, inst) in scene.diagram.instances.iter().enumerate() {
             self.draw_instance(&painter, origin, inst, self.selected.contains(&ii));
+        }
+        if let Some((from, cur)) = self.wiring {
+            let at = |e: Ep| match e {
+                Ep::Inst { inst, port } => {
+                    scene.diagram.instances.get(inst).map(|i| port_pos(i, port))
+                }
+                Ep::Top(k) => scene.pin_pos.get(k).copied(),
+            };
+            if let Some(a) = at(from) {
+                let to = pin_at(scene.diagram, scene.pin_pos, cur).and_then(at);
+                let end = to.map_or(to_s((cur.0 as i32, cur.1 as i32)), to_s);
+                painter.line_segment([to_s(a), end], Stroke::new(2.0, pal.select));
+                if let Some(t) = to {
+                    painter.circle_stroke(to_s(t), 6.0 * z.max(0.6), Stroke::new(2.0, pal.select));
+                }
+            }
         }
 
         for (k, (pin, pos)) in scene

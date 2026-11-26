@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 enum PromptKind {
+    SaveView,
     RenameInstance(usize),
     RenamePort(usize, usize),
     SetSize(usize),
@@ -57,6 +58,51 @@ pub struct App {
     hist_pos: Option<usize>,
     show_structure: bool,
     show_objects: bool,
+    docks: [Dock; 3],
+    views: Vec<crate::views::SavedView>,
+    files: Vec<PathBuf>,
+    nav: Vec<crate::script::Frame>,
+    top: String,
+    /// GUI only: route on a worker thread so big diagrams do not freeze the window.
+    pub async_route: bool,
+    route_rx: Option<std::sync::mpsc::Receiver<Routed>>,
+    route_dirty: bool,
+    /// After opening a design, fit the view again once its wires arrive (they extend past the blocks).
+    refit_after_route: bool,
+}
+
+type Routed = (Vec<Wire>, Vec<Stub>, Vec<(String, Pt)>);
+
+const PANE_NAMES: [&str; 3] = ["Structure", "Objects", "Transcript"];
+
+/// Where a pane sits; the title-bar button steps through these.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dock {
+    Left,
+    Right,
+    Bottom,
+    Float,
+}
+
+impl Dock {
+    fn next(self) -> Dock {
+        match self {
+            Dock::Left => Dock::Right,
+            Dock::Right => Dock::Bottom,
+            Dock::Bottom => Dock::Float,
+            Dock::Float => Dock::Left,
+        }
+    }
+
+    /// Tooltip text for the button: where the pane goes next.
+    fn label(self) -> &'static str {
+        match self.next() {
+            Dock::Left => "dock left",
+            Dock::Right => "dock right",
+            Dock::Bottom => "dock bottom",
+            Dock::Float => "float",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -104,6 +150,15 @@ impl Default for App {
             hist_pos: None,
             show_structure: true,
             show_objects: true,
+            docks: [Dock::Left, Dock::Right, Dock::Bottom],
+            views: vec![],
+            files: vec![],
+            nav: vec![],
+            top: String::new(),
+            async_route: false,
+            route_rx: None,
+            route_dirty: false,
+            refit_after_route: false,
         }
     }
 }
@@ -113,7 +168,9 @@ impl App {
     pub fn open_file(&mut self, path: &Path) {
         match crate::load::load(path, self.grid) {
             Ok(l) => {
-                (self.diagram, self.signals, self.warnings) = (l.diagram, l.signals, l.warnings)
+                (self.diagram, self.signals, self.warnings) = (l.diagram, l.signals, l.warnings);
+                (self.files, self.top) = (l.files, l.top);
+                self.nav.clear();
             }
             Err(e) => {
                 self.warnings = vec![e];
@@ -122,6 +179,7 @@ impl App {
         }
         let name = path.to_string_lossy().into_owned();
         self.path = Some(path.to_path_buf());
+        self.views = crate::views::load(path);
         self.history.clear();
         self.drop_index_state();
         self.canvas.highlight = None;
@@ -129,6 +187,7 @@ impl App {
         recent::save(&self.recent);
         self.refresh();
         self.canvas.fit_requested = true;
+        self.refit_after_route = true;
     }
 
     /// Hand the diagram to the Tcl interpreter (it edits the same state and history as the GUI).
@@ -139,6 +198,11 @@ impl App {
             warnings: std::mem::take(&mut self.warnings),
             grid: self.grid,
             history: std::mem::take(&mut self.history),
+            views: std::mem::take(&mut self.views),
+            view_now: (self.canvas.pan.x, self.canvas.pan.y, self.canvas.zoom),
+            files: std::mem::take(&mut self.files),
+            nav: std::mem::take(&mut self.nav),
+            top: std::mem::take(&mut self.top),
             opened: false,
             ..Default::default()
         };
@@ -149,10 +213,20 @@ impl App {
         let s = std::mem::take(self.script.session());
         (self.diagram, self.signals, self.warnings, self.history) =
             (s.diagram, s.signals, s.warnings, s.history);
+        (self.files, self.nav, self.top) = (s.files, s.nav, s.top);
+        if s.views != self.views {
+            self.views = s.views;
+            self.persist_views();
+        }
+        if let Some((x, y, z)) = s.goto {
+            (self.canvas.pan, self.canvas.zoom) = (egui::vec2(x, y), z);
+            self.canvas.fit_requested = false;
+        }
         self.drop_index_state();
         if s.opened {
             self.canvas.highlight = None;
             self.canvas.fit_requested = true;
+            self.refit_after_route = true;
         }
         self.refresh();
     }
@@ -165,102 +239,95 @@ impl App {
         r
     }
 
-    /// Questa-style transcript docked at the bottom: warnings, echoed commands, results, prompt.
-    fn transcript_ui(&mut self, ui: &mut egui::Ui) {
-        if !self.console_open {
-            return;
-        }
+    /// Questa-style transcript: warnings, echoed commands, results and the prompt. Returns a line to run.
+    fn transcript_body(&mut self, ui: &mut egui::Ui) -> Option<String> {
         let mut run = None;
         let c = |r, g, b| egui::Color32::from_rgb(r, g, b);
-        egui::Panel::bottom("transcript")
-            .resizable(true)
-            .default_size(170.0)
-            .min_size(70.0)
+        let log_h = (ui.available_height() - 28.0).max(20.0);
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .max_height(log_h)
             .show(ui, |ui| {
-                inspector::title(ui, "Transcript");
-                let log_h = (ui.available_height() - 28.0).max(20.0);
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .max_height(log_h)
-                    .show(ui, |ui| {
-                        for w in &self.warnings {
-                            let t = format!("# ** Warning: {w}");
-                            ui.label(
-                                egui::RichText::new(t)
-                                    .monospace()
-                                    .color(c(0xFF, 0xB7, 0x4D)),
-                            );
-                        }
-                        for (k, l) in &self.console_log {
-                            let col = match k {
-                                LogKind::Echo => c(0x9C, 0xDC, 0xFE),
-                                LogKind::Out => c(0xB5, 0xF5, 0xB5),
-                                LogKind::Err => c(0xFF, 0x6B, 0x6B),
-                            };
-                            ui.label(egui::RichText::new(l).monospace().color(col));
-                        }
-                    });
-                ui.horizontal(|ui| {
+                for w in &self.warnings {
+                    let t = format!("# ** Warning: {w}");
                     ui.label(
-                        egui::RichText::new("VSIM>")
+                        egui::RichText::new(t)
                             .monospace()
-                            .strong()
-                            .color(c(0x9C, 0xDC, 0xFE)),
+                            .color(c(0xFF, 0xB7, 0x4D)),
                     );
-                    let id = egui::Id::new("transcript_input");
-                    if ui.memory(|m| m.has_focus(id)) {
-                        let key = |ui: &egui::Ui, k| {
-                            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k))
-                        };
-                        if key(ui, egui::Key::ArrowUp) && !self.console_hist.is_empty() {
-                            let at = self
-                                .hist_pos
-                                .map_or(self.console_hist.len() - 1, |p| p.saturating_sub(1));
-                            self.hist_pos = Some(at);
-                            self.console_input = self.console_hist[at].clone();
-                        }
-                        if key(ui, egui::Key::ArrowDown) {
-                            self.hist_pos = self
-                                .hist_pos
-                                .map(|p| p + 1)
-                                .filter(|&p| p < self.console_hist.len());
-                            self.console_input = self
-                                .hist_pos
-                                .map_or(String::new(), |p| self.console_hist[p].clone());
-                        }
-                        if key(ui, egui::Key::Tab) {
-                            self.complete();
-                        }
-                    }
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut self.console_input)
-                            .id(id)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("instances, rename u1 cpu, group G u1 u2 …"),
-                    );
-                    if r.has_focus() {
-                        // the TextEdit resets this every frame, so set ours after it: Tab and
-                        // Up/Down stay in the box (history, completion) instead of moving focus
-                        ui.memory_mut(|m| {
-                            m.set_focus_lock_filter(
-                                r.id,
-                                egui::EventFilter {
-                                    tab: true,
-                                    horizontal_arrows: false,
-                                    vertical_arrows: true,
-                                    escape: false,
-                                },
-                            )
-                        });
-                    }
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        run = Some(std::mem::take(&mut self.console_input));
-                        r.request_focus();
-                    }
-                });
+                }
+                for (k, l) in &self.console_log {
+                    let col = match k {
+                        LogKind::Echo => c(0x9C, 0xDC, 0xFE),
+                        LogKind::Out => c(0xB5, 0xF5, 0xB5),
+                        LogKind::Err => c(0xFF, 0x6B, 0x6B),
+                    };
+                    ui.label(egui::RichText::new(l).monospace().color(col));
+                }
             });
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("VSIM>")
+                    .monospace()
+                    .strong()
+                    .color(c(0x9C, 0xDC, 0xFE)),
+            );
+            let id = egui::Id::new("transcript_input");
+            if ui.memory(|m| m.has_focus(id)) {
+                let key =
+                    |ui: &egui::Ui, k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+                if key(ui, egui::Key::ArrowUp) && !self.console_hist.is_empty() {
+                    let at = self
+                        .hist_pos
+                        .map_or(self.console_hist.len() - 1, |p| p.saturating_sub(1));
+                    self.hist_pos = Some(at);
+                    self.console_input = self.console_hist[at].clone();
+                }
+                if key(ui, egui::Key::ArrowDown) {
+                    self.hist_pos = self
+                        .hist_pos
+                        .map(|p| p + 1)
+                        .filter(|&p| p < self.console_hist.len());
+                    self.console_input = self
+                        .hist_pos
+                        .map_or(String::new(), |p| self.console_hist[p].clone());
+                }
+                if key(ui, egui::Key::Tab) {
+                    self.complete();
+                }
+            }
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.console_input)
+                    .id(id)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("instances, rename u1 cpu, group G u1 u2 …"),
+            );
+            if r.has_focus() {
+                // the TextEdit resets this every frame, so set ours after it: Tab and
+                // Up/Down stay in the box (history, completion) instead of moving focus
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        r.id,
+                        egui::EventFilter {
+                            tab: true,
+                            horizontal_arrows: false,
+                            vertical_arrows: true,
+                            escape: false,
+                        },
+                    )
+                });
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                run = Some(std::mem::take(&mut self.console_input));
+                r.request_focus();
+            }
+        });
+        run
+    }
+
+    fn run_line(&mut self, run: Option<String>) {
         if let Some(line) = run.filter(|l| !l.trim().is_empty()) {
             self.console_log
                 .push((LogKind::Echo, format!("VSIM> {line}")));
@@ -318,6 +385,30 @@ impl App {
         }
     }
 
+    fn export_hdl(&mut self) {
+        let Some(p) = rfd::FileDialog::new()
+            .add_filter("VHDL", &["vhd"])
+            .add_filter("SystemVerilog", &["sv"])
+            .set_file_name("top.vhd")
+            .save_file()
+        else {
+            return;
+        };
+        let name = if self.top.is_empty() {
+            "top"
+        } else {
+            &self.top
+        };
+        let text = if p.extension().is_some_and(|e| e == "sv" || e == "v") {
+            crate::hdlgen::to_sv(&self.diagram, &self.signals, name)
+        } else {
+            crate::hdlgen::to_vhdl(&self.diagram, &self.signals, name)
+        };
+        if let Err(e) = std::fs::write(&p, text) {
+            self.warnings = vec![format!("cannot write {}: {e}", p.display())];
+        }
+    }
+
     fn export_image(&mut self) {
         let Some(p) = rfd::FileDialog::new()
             .add_filter("SVG", &["svg"])
@@ -332,13 +423,115 @@ impl App {
         }
     }
 
+    fn persist_views(&self) {
+        if let Some(p) = &self.path {
+            crate::views::save(p, &self.views);
+        }
+    }
+
+    fn pane_shown(&self, p: usize) -> bool {
+        [self.show_structure, self.show_objects, self.console_open][p]
+    }
+
+    /// One dockable pane: a blue title bar whose button moves it to the next place, then its body.
+    fn pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: usize,
+        actions: &mut Vec<Action>,
+        run: &mut Option<String>,
+    ) {
+        let name = if p == 0 && !self.crumb().is_empty() {
+            format!("Structure — {}", self.crumb())
+        } else {
+            PANE_NAMES[p].to_string()
+        };
+        if inspector::header(ui, &name, self.docks[p].label()) {
+            self.docks[p] = self.docks[p].next();
+        }
+        match p {
+            0 => actions.extend(inspector::structure(
+                ui,
+                &self.diagram,
+                &self.canvas.selected,
+                &mut self.filter,
+            )),
+            1 => actions.extend(inspector::objects(
+                ui,
+                &self.diagram,
+                &self.canvas.selected,
+                &self.wires,
+                &self.stubs,
+                self.canvas.highlight.as_deref(),
+                &self.filter,
+            )),
+            _ => *run = self.transcript_body(ui),
+        }
+    }
+
+    /// Run a navigation command; a failure is shown as a warning.
+    fn navigate(&mut self, cmd: &str) {
+        match self.run_script(cmd) {
+            Ok(_) => {
+                self.canvas.highlight = None;
+                self.path = None;
+            }
+            Err(e) => self.warnings = vec![e],
+        }
+    }
+
+    /// `top / sub / subsub` for the Structure pane title.
+    fn crumb(&self) -> String {
+        let mut parts: Vec<&str> = self.nav.iter().map(|f| f.top.as_str()).collect();
+        parts.push(&self.top);
+        parts.retain(|p| !p.is_empty());
+        parts.join(" / ")
+    }
+
     /// Re-route after any change to the diagram.
     pub fn refresh(&mut self) {
         self.pin_pos = top_pin_positions(&self.diagram);
-        let r = route_all_opts(&self.diagram, self.stub_globals);
-        (self.wires, self.stubs) = (r.wires, r.stubs);
         self.pin_ok = pin_connected(&self.diagram);
-        self.junctions = wire_junctions(&self.diagram, &self.wires);
+        if self.async_route {
+            self.route_dirty = true; // `poll_route` starts the job; old wires stay until it ends
+        } else {
+            let r = route_all_opts(&self.diagram, self.stub_globals);
+            self.junctions = wire_junctions(&self.diagram, &r.wires);
+            (self.wires, self.stubs) = (r.wires, r.stubs);
+        }
+    }
+
+    /// Collect a finished routing job and start the next one if the diagram changed meanwhile.
+    fn poll_route(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.route_rx {
+            match rx.try_recv() {
+                Ok((w, st, j)) => {
+                    (self.wires, self.stubs, self.junctions) = (w, st, j);
+                    self.route_rx = None;
+                    if self.refit_after_route && !self.route_dirty {
+                        self.refit_after_route = false;
+                        self.canvas.fit_requested = true;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(40));
+                    return;
+                }
+                Err(_) => self.route_rx = None,
+            }
+        }
+        if self.route_rx.is_none() && self.route_dirty {
+            self.route_dirty = false;
+            let (d, stubs) = (self.diagram.clone(), self.stub_globals);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let r = route_all_opts(&d, stubs);
+                let j = wire_junctions(&d, &r.wires);
+                let _ = tx.send((r.wires, r.stubs, j));
+            });
+            self.route_rx = Some(rx);
+            ctx.request_repaint_after(std::time::Duration::from_millis(40));
+        }
     }
 
     /// Apply `f`, record the previous state for undo, re-route.
@@ -456,6 +649,43 @@ impl App {
                     self.canvas.selected = vec![i];
                 }
             }
+            Action::Descend(i) => {
+                if let Some(name) = self.diagram.instances.get(i).map(|b| b.name.clone()) {
+                    self.navigate(&format!("descend {name}"));
+                }
+            }
+            Action::Ascend => self.navigate("ascend"),
+            Action::SaveView => {
+                let name = (1..)
+                    .map(|n| format!("View {n}"))
+                    .find(|n| self.views.iter().all(|v| &v.name != n))
+                    .expect("infinite range");
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::SaveView,
+                    title: "Save view as",
+                    text: name,
+                });
+            }
+            Action::GotoView(i) => {
+                if let Some(v) = self.views.get(i) {
+                    (self.canvas.pan, self.canvas.zoom) = (egui::vec2(v.pan.0, v.pan.1), v.zoom);
+                    self.canvas.fit_requested = false;
+                }
+            }
+            Action::DeleteView(i) => {
+                if i < self.views.len() {
+                    self.views.remove(i);
+                    self.persist_views();
+                }
+            }
+            Action::Connect(a, b) => {
+                let mut result = Ok(String::new());
+                self.edit(|d| result = edit::connect(d, a, b));
+                if let Err(e) = result {
+                    self.warnings = vec![e];
+                }
+            }
+            Action::Disconnect(e) => self.edit(|d| edit::disconnect(d, e)),
             Action::CollapseInterfaces => self.edit(|d| {
                 crate::interface::collapse_all(d, g);
             }),
@@ -502,6 +732,15 @@ impl App {
         let g = self.grid;
         let t = p.text.trim().to_string();
         match p.kind {
+            PromptKind::SaveView if !t.is_empty() => {
+                let v = crate::views::SavedView {
+                    name: t,
+                    pan: (self.canvas.pan.x, self.canvas.pan.y),
+                    zoom: self.canvas.zoom,
+                };
+                crate::views::put(&mut self.views, v);
+                self.persist_views();
+            }
             PromptKind::RenameInstance(i) if !t.is_empty() => self.edit(|d| {
                 if let Some(n) = d.instances.get_mut(i) {
                     n.name = t;
@@ -537,6 +776,7 @@ fn ungroup_actions(selected: &[usize]) -> Vec<Action> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_route(ui.ctx());
         ui.ctx().set_visuals(if self.canvas.dark {
             questa_visuals()
         } else {
@@ -591,6 +831,10 @@ impl eframe::App for App {
                         ui.close();
                         self.export_image();
                     }
+                    if ui.button("Export HDL…").clicked() {
+                        ui.close();
+                        self.export_hdl();
+                    }
                 });
                 ui.menu_button("Edit", |ui| {
                     if ui.button("Undo (Ctrl+Z)").clicked() {
@@ -622,6 +866,14 @@ impl eframe::App for App {
                     }
                     if ui.button("Auto layout selection").clicked() {
                         actions.push(Action::AutoLayoutSelection);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(!self.nav.is_empty(), egui::Button::new("Go up one level"))
+                        .clicked()
+                    {
+                        actions.push(Action::Ascend);
                         ui.close();
                     }
                     ui.separator();
@@ -657,44 +909,70 @@ impl eframe::App for App {
                     for (label, g) in GRID_OPTIONS {
                         ui.radio_value(&mut self.grid, g, label);
                     }
+                    ui.menu_button("Bookmarks", |ui| {
+                        if ui.button("Save view…").clicked() {
+                            actions.push(Action::SaveView);
+                            ui.close();
+                        }
+                        for (i, v) in self.views.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui.button(&v.name).clicked() {
+                                    actions.push(Action::GotoView(i));
+                                    ui.close();
+                                }
+                                if ui.small_button("✕").clicked() {
+                                    actions.push(Action::DeleteView(i));
+                                    ui.close();
+                                }
+                            });
+                        }
+                    });
                     if ui.button("Zoom to fit").clicked() {
                         self.canvas.fit_requested = true;
                         ui.close();
                     }
                 });
+                if self.route_rx.is_some() || self.route_dirty {
+                    ui.weak("⟳ routing…");
+                }
             });
         });
         if let Some(p) = open {
             self.open_file(&p);
         }
-        self.transcript_ui(ui);
-        if self.show_structure {
-            egui::Panel::left("structure")
-                .default_size(220.0)
-                .show(ui, |ui| {
-                    actions.extend(inspector::structure(
-                        ui,
-                        &self.diagram,
-                        &self.canvas.selected,
-                        &mut self.filter,
-                    ));
-                });
+        let mut run = None;
+        for region in [Dock::Left, Dock::Right, Dock::Bottom] {
+            let panes: Vec<usize> = (0..3)
+                .filter(|&p| self.docks[p] == region && self.pane_shown(p))
+                .collect();
+            if panes.is_empty() {
+                continue;
+            }
+            let panel = match region {
+                Dock::Left => egui::Panel::left("dock_left").default_size(230.0),
+                Dock::Right => egui::Panel::right("dock_right").default_size(240.0),
+                _ => egui::Panel::bottom("dock_bottom")
+                    .default_size(170.0)
+                    .min_size(70.0),
+            };
+            panel.resizable(true).show(ui, |ui| {
+                let share = ui.available_height() / panes.len() as f32;
+                for &p in &panes {
+                    ui.allocate_ui(egui::vec2(ui.available_width(), share), |ui| {
+                        self.pane(ui, p, &mut actions, &mut run);
+                    });
+                }
+            });
         }
-        if self.show_objects {
-            egui::Panel::right("objects")
-                .default_size(240.0)
-                .show(ui, |ui| {
-                    actions.extend(inspector::objects(
-                        ui,
-                        &self.diagram,
-                        &self.canvas.selected,
-                        &self.wires,
-                        &self.stubs,
-                        self.canvas.highlight.as_deref(),
-                        &self.filter,
-                    ));
-                });
+        for (p, name) in PANE_NAMES.iter().enumerate() {
+            if self.docks[p] == Dock::Float && self.pane_shown(p) {
+                egui::Window::new(*name)
+                    .title_bar(false)
+                    .default_size([300.0, 320.0])
+                    .show(ui.ctx(), |ui| self.pane(ui, p, &mut actions, &mut run));
+            }
         }
+        self.run_line(run);
         let mut outcomes = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
             let mut view = View {
@@ -900,5 +1178,27 @@ mod tests {
         a.open_file(&p);
         std::fs::remove_file(&p).ok();
         assert_eq!(a.diagram.instances.len(), 1);
+    }
+
+    #[test]
+    fn async_routing_delivers_the_same_wires_in_the_end() {
+        let mut sync = App::default();
+        sync.open_file(Path::new("tests/fixtures/RC4_sync_top.vhd"));
+        let mut a = App {
+            async_route: true,
+            ..Default::default()
+        };
+        a.open_file(Path::new("tests/fixtures/RC4_sync_top.vhd"));
+        assert!(a.wires.is_empty(), "nothing routed until the job is polled");
+        let ctx = egui::Context::default();
+        for _ in 0..500 {
+            a.poll_route(&ctx);
+            if a.route_rx.is_none() && !a.route_dirty {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(a.wires.len(), sync.wires.len());
+        assert!(!a.wires.is_empty());
     }
 }

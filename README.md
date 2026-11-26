@@ -64,3 +64,14 @@ Children of an expanded group cannot be addressed by name yet.
 - View > "Clock/reset as stubs" (on by default) draws clock/reset nets and any net with 8+ pins as a short labelled stub at each pin instead of a routed wire.
 - Click a wire to fade every other net. Each net is labelled once.
 - Top-level pins with no connection are hollow; hide them with View > Unconnected pins.
+
+## Projects, hierarchy and editing
+
+- **Project files:** `open list.f` reads a file list (one path per line, `#` and `//` comments, `-top NAME` or `+top+NAME`). Without a list, the other HDL files next to the opened one are used. `open file ?top?` (Tcl) draws a chosen entity or module.
+- **Hierarchy:** right-click a block > "Descend into" (Tcl: `descend inst`) opens the diagram of that block's entity from the project files; Tools > "Go up one level" (`ascend`) comes back. The Structure pane title shows the path.
+- **Generate loops:** `for … generate` with literal bounds (VHDL and SystemVerilog) is expanded, each copy its own block (`u(0)`, `u[1]`). `if`/`case` generates and symbolic bounds are listed once with a warning.
+- **Editing wires:** drag from one pin to another to connect them (they share a net; two existing nets merge). Right-click a port > Disconnect. Tcl: `connect a.port b.port`, `connect pin:name a.port`, `disconnect a.port`.
+- **Export HDL:** File > Export HDL… (Tcl `exporthdl file.vhd|file.sv`) writes the diagram back as a top-level entity/module. Generics and sub-block port types are not reproduced; SystemVerilog ports are written as `logic`.
+- **Saved views:** View > Bookmarks, or Tcl `view save|goto|delete|list name`. Stored next to the source as `<file>.views.json`.
+- **Panes:** every pane's title-bar button (⧉) moves it left, right, bottom or into a floating window.
+- Routing runs on a worker thread in the GUI, so large designs stay responsive; wires appear when ready.

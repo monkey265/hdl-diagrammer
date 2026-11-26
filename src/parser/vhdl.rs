@@ -25,7 +25,9 @@ pub(super) fn guess_direction(port: &str) -> Direction {
     }
 }
 
-fn parse_ports(body: &str) -> Vec<Port> {
+/// Ports plus each port's declared type text (after the direction, default value dropped).
+fn parse_ports_typed(body: &str) -> (Vec<Port>, Vec<(String, String)>) {
+    let mut types = Vec::new();
     let mut out = Vec::new();
     for decl in split_top_level(body, ';') {
         let Some((names, rest)) = decl.split_once(':') else {
@@ -45,21 +47,46 @@ fn parse_ports(body: &str) -> Vec<Port> {
             let n = n.trim();
             if !n.is_empty() {
                 out.push(Port::new(n, dir, n));
+                let ty = rest.trim_start();
+                let ty = ty.split_once(char::is_whitespace).map_or("", |x| x.1);
+                let ty = ty.split(":=").next().unwrap_or("");
+                types.push((n.to_string(), squash(ty)));
             }
         }
     }
-    out
+    (out, types)
 }
 
+#[cfg(test)]
 pub fn parse_vhdl(text: &str) -> Design {
-    let src = strip_comments_vhdl(text);
+    parse_vhdl_top(text, None)
+}
+
+/// Parse with `want` as the top entity: only its architectures contribute instances and signals.
+pub fn parse_vhdl_top(text: &str, want: Option<&str>) -> Design {
+    let (src, loops) = super::generate::expand_vhdl(&strip_comments_vhdl(text));
     let mut d = Design::default();
+    let arch_re = Regex::new(r"(?i)\barchitecture\s+\w+\s+of\s+(\w+)\s+is\b").unwrap();
+    let archs: Vec<(usize, String)> = arch_re
+        .captures_iter(&src)
+        .map(|c| (c.get(0).unwrap().start(), c[1].to_ascii_lowercase()))
+        .collect();
+    // is `pos` inside an architecture of the wanted entity? (always true when none is wanted)
+    let wanted = |pos: usize| match want {
+        None => true,
+        Some(w) => archs
+            .iter()
+            .rev()
+            .find(|(start, _)| *start <= pos)
+            .is_some_and(|(_, e)| e.eq_ignore_ascii_case(w)),
+    };
 
     // Entity declarations: name -> ports (first one is the fallback top).
     let ent_re = Regex::new(r"(?i)\bentity\s+(\w+)\s+is\b").unwrap();
     let port_re = Regex::new(r"(?i)\bport\s*\(").unwrap();
     let end_re = Regex::new(r"(?i)\bend\b").unwrap();
     let mut entities: Vec<(String, Vec<Port>)> = Vec::new();
+    let mut port_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for m in ent_re.captures_iter(&src) {
         let after = m.get(0).unwrap().end();
         let rest = &src[after..];
@@ -67,9 +94,11 @@ pub fn parse_vhdl(text: &str) -> Design {
         let ports = match port_re.find(rest) {
             Some(p) if p.start() < end_at => {
                 let open = after + p.end() - 1;
-                balanced_parens(&src, open)
-                    .map(parse_ports)
-                    .unwrap_or_default()
+                let (ports, types) = balanced_parens(&src, open)
+                    .map(parse_ports_typed)
+                    .unwrap_or_default();
+                port_types.insert(m[1].to_ascii_lowercase(), types);
+                ports
             }
             _ => Vec::new(),
         };
@@ -86,6 +115,9 @@ pub fn parse_vhdl(text: &str) -> Design {
     let sig_re =
         Regex::new(r"(?is)\bsignal\s+(\w+(?:\s*,\s*\w+)*)\s*:\s*([^;:=]+?)(?::=.*?)?;").unwrap();
     for m in sig_re.captures_iter(&src) {
+        if !wanted(m.get(0).unwrap().start()) {
+            continue;
+        }
         for n in m[1].split(',') {
             d.signals.insert(n.trim().to_string(), squash(&m[2]));
         }
@@ -97,6 +129,9 @@ pub fn parse_vhdl(text: &str) -> Design {
         Regex::new(r"(?is)(\w+)\s*:\s*(?:entity\s+|component\s+|configuration\s+)?([\w.]+)")
             .unwrap();
     for m in pm_re.find_iter(&src) {
+        if !wanted(m.start()) {
+            continue;
+        }
         let start = src[..m.start()].rfind(';').map_or(0, |i| i + 1);
         let header = &src[start..m.start()];
         // the instance label is the last `label :` before `port map`; earlier ones are generate/block labels
@@ -150,19 +185,35 @@ pub fn parse_vhdl(text: &str) -> Design {
         d.instances.push(Instance::new(&label, &ent, ports));
     }
 
+    super::generate::rename_copies(&mut d, &loops, '(', ')');
     d.entities = entities
         .iter()
         .map(|(n, p)| (n.to_ascii_lowercase(), p.clone()))
         .collect();
 
     // Top = first entity nobody instantiates, else first entity.
-    let top = entities
-        .iter()
-        .find(|(n, _)| !d.instances.iter().any(|i| i.entity.eq_ignore_ascii_case(n)))
-        .or(entities.first());
+    let top = match want {
+        Some(w) => entities.iter().find(|(n, _)| n.eq_ignore_ascii_case(w)),
+        None => entities
+            .iter()
+            .find(|(n, _)| !d.instances.iter().any(|i| i.entity.eq_ignore_ascii_case(n)))
+            .or(entities.first()),
+    };
+    if let (Some(w), None) = (want, top) {
+        d.warnings
+            .push(format!("entity {w} not found in this file"));
+    }
     if let Some((n, p)) = top {
         d.top_name = n.clone();
         d.top_ports = p.clone();
+        // the top's port types join the signal table: export needs them, and buses get bus colours
+        for (pn, ty) in port_types
+            .get(&n.to_ascii_lowercase())
+            .into_iter()
+            .flatten()
+        {
+            d.signals.entry(pn.clone()).or_insert_with(|| ty.clone());
+        }
     }
     d
 }
@@ -282,7 +333,11 @@ end;";
             .iter()
             .map(|i| (i.name.as_str(), i.entity.as_str()))
             .collect();
-        assert_eq!(got, vec![("u", "sub"), ("v", "sub")]);
+        // the for-generate (literal bounds) is expanded; the if-generate is listed once with a warning
+        let names: Vec<_> = got.iter().map(|g| g.0).collect();
+        assert_eq!(names.last(), Some(&"v"));
+        assert!(names.iter().all(|n| *n == "v" || n.starts_with("u(")));
+        assert!(got.iter().all(|g| g.1 == "sub"));
         assert!(d.warnings.iter().any(|w| w.contains("generate")));
     }
 }
