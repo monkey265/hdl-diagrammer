@@ -952,8 +952,10 @@ mod tests {
     fn async_routing_delivers_the_same_wires_in_the_end() {
         let mut sync = App::default();
         sync.open_file(Path::new("tests/fixtures/RC4_sync_top.vhd"));
-        let mut a = App::default();
-        a.async_route = true;
+        let mut a = App {
+            async_route: true,
+            ..Default::default()
+        };
         a.open_file(Path::new("tests/fixtures/RC4_sync_top.vhd"));
         assert!(a.wires.is_empty(), "nothing routed until the job is polled");
         let ctx = egui::Context::default();
