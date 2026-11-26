@@ -1,3 +1,4 @@
+pub mod generate;
 pub mod lex;
 pub mod sv;
 pub mod vhdl;

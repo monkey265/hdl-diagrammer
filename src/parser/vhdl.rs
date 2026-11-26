@@ -58,7 +58,7 @@ pub fn parse_vhdl(text: &str) -> Design {
 
 /// Parse with `want` as the top entity: only its architectures contribute instances and signals.
 pub fn parse_vhdl_top(text: &str, want: Option<&str>) -> Design {
-    let src = strip_comments_vhdl(text);
+    let (src, loops) = super::generate::expand_vhdl(&strip_comments_vhdl(text));
     let mut d = Design::default();
     let arch_re = Regex::new(r"(?i)\barchitecture\s+\w+\s+of\s+(\w+)\s+is\b").unwrap();
     let archs: Vec<(usize, String)> = arch_re
@@ -176,6 +176,7 @@ pub fn parse_vhdl_top(text: &str, want: Option<&str>) -> Design {
         d.instances.push(Instance::new(&label, &ent, ports));
     }
 
+    super::generate::rename_copies(&mut d, &loops, '(', ')');
     d.entities = entities
         .iter()
         .map(|(n, p)| (n.to_ascii_lowercase(), p.clone()))
@@ -315,7 +316,11 @@ end;";
             .iter()
             .map(|i| (i.name.as_str(), i.entity.as_str()))
             .collect();
-        assert_eq!(got, vec![("u", "sub"), ("v", "sub")]);
+        // the for-generate (literal bounds) is expanded; the if-generate is listed once with a warning
+        let names: Vec<_> = got.iter().map(|g| g.0).collect();
+        assert_eq!(names.last(), Some(&"v"));
+        assert!(names.iter().all(|n| *n == "v" || n.starts_with("u(")));
+        assert!(got.iter().all(|g| g.1 == "sub"));
         assert!(d.warnings.iter().any(|w| w.contains("generate")));
     }
 }
