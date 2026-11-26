@@ -108,6 +108,24 @@ pub fn sibling_files(path: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
+/// HDL files below `root` (hidden folders, `target` and `node_modules` skipped), at most `depth` deep.
+pub fn tree_files(root: &std::path::Path, depth: usize) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if p.is_dir() {
+            if depth > 0 && !name.starts_with('.') && name != "target" && name != "node_modules" {
+                out.extend(tree_files(&p, depth - 1));
+            }
+        } else if is_hdl(&p) {
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
 /// A project file list (`.f`): one path per line, relative to the list; `#` and `//` comments;
 /// `-top NAME` / `+top+NAME` name the top. Returns (files, top).
 pub fn read_filelist(

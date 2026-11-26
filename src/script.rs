@@ -105,11 +105,33 @@ fn open(s: &mut Session, a: &[String]) -> Result<Value, String> {
 fn descend(s: &mut Session, a: &[String]) -> Result<Value, String> {
     let i = find(&s.diagram, &a[0])?;
     let entity = s.diagram.instances[i].entity.clone();
-    let lib = crate::parser::library(&s.files);
+    let key = entity.to_ascii_lowercase();
+    let mut lib = crate::parser::library(&s.files);
+    if !lib.file_of.contains_key(&key) {
+        // not in the project: look through the folders below the project's first file
+        let root = s
+            .files
+            .first()
+            .and_then(|f| f.parent())
+            .map(Path::to_path_buf);
+        let more: Vec<_> = root
+            .map(|r| crate::parser::tree_files(&r, 6))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| !s.files.contains(f))
+            .collect();
+        let found = crate::parser::library(&more);
+        if let Some(f) = found.file_of.get(&key) {
+            s.files.push(f.clone());
+            lib = crate::parser::library(&s.files);
+        }
+    }
     let file = lib
         .file_of
-        .get(&entity.to_ascii_lowercase())
-        .ok_or_else(|| format!("no source found for entity \"{entity}\" in the project files"))?
+        .get(&key)
+        .ok_or_else(|| {
+            format!("no source found for entity \"{entity}\" in the project files or the folders below them")
+        })?
         .clone();
     let l = crate::load::load_with(&file, s.grid, Some(&entity), Some(&s.files))?;
     s.nav.push(Frame {
@@ -809,6 +831,18 @@ architecture x of mid is begin u_leaf : entity work.leaf port map (i => i, o => 
         s.eval("ascend").unwrap();
         assert_eq!(s.eval("instances").unwrap(), "u_mid u_out");
         assert!(s.eval("ascend").is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn descend_finds_entities_in_subfolders() {
+        let dir = project("deep");
+        std::fs::create_dir_all(dir.join("ip/uart")).unwrap();
+        std::fs::rename(dir.join("leaf.vhd"), dir.join("ip/uart/leaf.vhd")).unwrap();
+        let mut s = Script::new(20);
+        s.eval(&format!("open {}/top.vhd", dir.display())).unwrap();
+        s.eval("descend u_mid").unwrap();
+        assert_eq!(s.eval("descend u_leaf").unwrap(), "leaf");
         std::fs::remove_dir_all(dir).ok();
     }
 

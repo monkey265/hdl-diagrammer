@@ -268,7 +268,7 @@ impl App {
             });
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("VSIM>")
+                egui::RichText::new("hdl>")
                     .monospace()
                     .strong()
                     .color(c(0x9C, 0xDC, 0xFE)),
@@ -330,7 +330,7 @@ impl App {
     fn run_line(&mut self, run: Option<String>) {
         if let Some(line) = run.filter(|l| !l.trim().is_empty()) {
             self.console_log
-                .push((LogKind::Echo, format!("VSIM> {line}")));
+                .push((LogKind::Echo, format!("hdl> {line}")));
             self.console_hist.push(line.clone());
             self.hist_pos = None;
             match self.run_script(&line) {
