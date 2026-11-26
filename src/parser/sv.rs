@@ -364,7 +364,13 @@ fn parse_modules(src: &str) -> Vec<Module> {
     mods
 }
 
+#[cfg(test)]
 pub fn parse_sv(text: &str) -> Design {
+    parse_sv_top(text, None)
+}
+
+/// Parse with module `want` as the top (default: the first module nobody instantiates).
+pub fn parse_sv_top(text: &str, want: Option<&str>) -> Design {
     let mut d = Design::default();
     let stripped = strip_comments_sv(text);
     let directive = Regex::new(r"(?m)^[ \t]*`[^\n]*").unwrap();
@@ -384,8 +390,13 @@ pub fn parse_sv(text: &str) -> Design {
         .collect();
     let instantiated = |n: &str| mods.iter().any(|m| m.raws.iter().any(|r| r.module == n));
     let tops: Vec<&Module> = mods.iter().filter(|m| !instantiated(&m.name)).collect();
-    let top = tops.first().copied().unwrap_or(&mods[0]);
-    if tops.len() > 1 {
+    let named = want.and_then(|w| mods.iter().find(|m| m.name.eq_ignore_ascii_case(w)));
+    if let (Some(w), None) = (want, named) {
+        d.warnings
+            .push(format!("module {w} not found in this file"));
+    }
+    let top = named.or(tops.first().copied()).unwrap_or(&mods[0]);
+    if want.is_none() && tops.len() > 1 {
         d.warnings.push(format!(
             "{} modules are never instantiated; using {}",
             tops.len(),

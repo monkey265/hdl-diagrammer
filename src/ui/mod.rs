@@ -26,6 +26,10 @@ pub enum Action {
     AutoLayoutSelection,
     /// Select a block and pan the view to it.
     Focus(usize),
+    /// Open the diagram of this instance's entity from the project files.
+    Descend(usize),
+    /// Back to the diagram above.
+    Ascend,
     CollapseInterfaces,
     ExpandInterfaces,
     Validate,

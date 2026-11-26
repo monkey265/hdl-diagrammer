@@ -348,6 +348,10 @@ impl Canvas {
                     out.push(Outcome::Do(Action::ToggleLock(i)));
                     ui.close();
                 }
+                if !inst.is_group && ui.button("Descend into").clicked() {
+                    out.push(Outcome::Do(Action::Descend(i)));
+                    ui.close();
+                }
                 if ui.button("Reset ports").clicked() {
                     out.push(Outcome::Do(Action::ResetPorts(i)));
                     ui.close();

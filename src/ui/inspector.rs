@@ -26,12 +26,20 @@ fn arrow(d: Direction) -> &'static str {
 /// Left pane: the design hierarchy. Click a block to select it and pan to it.
 pub fn structure(
     ui: &mut egui::Ui,
+    crumb: &str,
     d: &Diagram,
     selected: &[usize],
     filter: &mut String,
 ) -> Vec<Action> {
     let mut out = Vec::new();
-    title(ui, "Structure");
+    title(
+        ui,
+        &if crumb.is_empty() {
+            "Structure".into()
+        } else {
+            format!("Structure — {crumb}")
+        },
+    );
     ui.add(egui::TextEdit::singleline(filter).hint_text("🔍 find block or net"));
     let q = filter.to_ascii_lowercase();
     let hit = |s: &str| q.is_empty() || s.to_ascii_lowercase().contains(&q);

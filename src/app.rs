@@ -57,6 +57,9 @@ pub struct App {
     hist_pos: Option<usize>,
     show_structure: bool,
     show_objects: bool,
+    files: Vec<PathBuf>,
+    nav: Vec<crate::script::Frame>,
+    top: String,
     /// GUI only: route on a worker thread so big diagrams do not freeze the window.
     pub async_route: bool,
     route_rx: Option<std::sync::mpsc::Receiver<Routed>>,
@@ -110,6 +113,9 @@ impl Default for App {
             hist_pos: None,
             show_structure: true,
             show_objects: true,
+            files: vec![],
+            nav: vec![],
+            top: String::new(),
             async_route: false,
             route_rx: None,
             route_dirty: false,
@@ -122,7 +128,9 @@ impl App {
     pub fn open_file(&mut self, path: &Path) {
         match crate::load::load(path, self.grid) {
             Ok(l) => {
-                (self.diagram, self.signals, self.warnings) = (l.diagram, l.signals, l.warnings)
+                (self.diagram, self.signals, self.warnings) = (l.diagram, l.signals, l.warnings);
+                (self.files, self.top) = (l.files, l.top);
+                self.nav.clear();
             }
             Err(e) => {
                 self.warnings = vec![e];
@@ -148,6 +156,9 @@ impl App {
             warnings: std::mem::take(&mut self.warnings),
             grid: self.grid,
             history: std::mem::take(&mut self.history),
+            files: std::mem::take(&mut self.files),
+            nav: std::mem::take(&mut self.nav),
+            top: std::mem::take(&mut self.top),
             opened: false,
             ..Default::default()
         };
@@ -158,6 +169,7 @@ impl App {
         let s = std::mem::take(self.script.session());
         (self.diagram, self.signals, self.warnings, self.history) =
             (s.diagram, s.signals, s.warnings, s.history);
+        (self.files, self.nav, self.top) = (s.files, s.nav, s.top);
         self.drop_index_state();
         if s.opened {
             self.canvas.highlight = None;
@@ -341,6 +353,25 @@ impl App {
         }
     }
 
+    /// Run a navigation command; a failure is shown as a warning.
+    fn navigate(&mut self, cmd: &str) {
+        match self.run_script(cmd) {
+            Ok(_) => {
+                self.canvas.highlight = None;
+                self.path = None;
+            }
+            Err(e) => self.warnings = vec![e],
+        }
+    }
+
+    /// `top / sub / subsub` for the Structure pane title.
+    fn crumb(&self) -> String {
+        let mut parts: Vec<&str> = self.nav.iter().map(|f| f.top.as_str()).collect();
+        parts.push(&self.top);
+        parts.retain(|p| !p.is_empty());
+        parts.join(" / ")
+    }
+
     /// Re-route after any change to the diagram.
     pub fn refresh(&mut self) {
         self.pin_pos = top_pin_positions(&self.diagram);
@@ -498,6 +529,12 @@ impl App {
                     self.canvas.selected = vec![i];
                 }
             }
+            Action::Descend(i) => {
+                if let Some(name) = self.diagram.instances.get(i).map(|b| b.name.clone()) {
+                    self.navigate(&format!("descend {name}"));
+                }
+            }
+            Action::Ascend => self.navigate("ascend"),
             Action::CollapseInterfaces => self.edit(|d| {
                 crate::interface::collapse_all(d, g);
             }),
@@ -668,6 +705,14 @@ impl eframe::App for App {
                         ui.close();
                     }
                     ui.separator();
+                    if ui
+                        .add_enabled(!self.nav.is_empty(), egui::Button::new("Go up one level"))
+                        .clicked()
+                    {
+                        actions.push(Action::Ascend);
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button("Collapse interfaces").clicked() {
                         actions.push(Action::CollapseInterfaces);
                         ui.close();
@@ -714,12 +759,14 @@ impl eframe::App for App {
             self.open_file(&p);
         }
         self.transcript_ui(ui);
+        let crumb = self.crumb();
         if self.show_structure {
             egui::Panel::left("structure")
                 .default_size(220.0)
                 .show(ui, |ui| {
                     actions.extend(inspector::structure(
                         ui,
+                        &crumb,
                         &self.diagram,
                         &self.canvas.selected,
                         &mut self.filter,

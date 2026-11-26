@@ -20,14 +20,19 @@ pub struct Design {
 
 /// Dispatch on file extension; unknown extensions yield an empty design with a warning.
 pub fn parse_file(path_or_ext: &str, text: &str) -> Design {
+    parse_file_top(path_or_ext, text, None)
+}
+
+/// Like `parse_file`, but build the diagram of the entity/module named `top`.
+pub fn parse_file_top(path_or_ext: &str, text: &str, top: Option<&str>) -> Design {
     let ext = path_or_ext
         .rsplit('.')
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "vhd" | "vhdl" => vhdl::parse_vhdl(text),
-        "sv" | "v" | "svh" => sv::parse_sv(text),
+        "vhd" | "vhdl" => vhdl::parse_vhdl_top(text, top),
+        "sv" | "v" | "svh" => sv::parse_sv_top(text, top),
         _ => Design {
             warnings: vec![format!("unsupported file type '.{ext}'")],
             ..Default::default()
@@ -73,42 +78,96 @@ pub fn resolve(d: &mut Design, lib: &HashMap<String, Vec<Port>>) {
     }
 }
 
-/// Parse every other HDL file next to `path` and merge their entities into one lookup table.
-pub fn sibling_entities(path: &std::path::Path) -> HashMap<String, Vec<Port>> {
-    let mut lib = HashMap::new();
-    let Some(dir) = path.parent().map(|p| {
-        if p.as_os_str().is_empty() {
-            std::path::Path::new(".")
-        } else {
-            p
-        }
-    }) else {
-        return lib;
+fn is_hdl(f: &std::path::Path) -> bool {
+    let e = f
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(e.as_str(), "vhd" | "vhdl" | "sv" | "v" | "svh")
+}
+
+/// HDL files in the folder of `path`, `path` itself included, sorted.
+pub fn sibling_files(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
     };
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|f| f != path)
-        .filter(|f| {
-            let e = f
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            matches!(e.as_str(), "vhd" | "vhdl" | "sv" | "v" | "svh")
-        })
+        .filter(|f| is_hdl(f))
         .collect();
+    if !files.iter().any(|f| f == path) {
+        files.push(path.to_path_buf());
+    }
     files.sort();
+    files
+}
+
+/// A project file list (`.f`): one path per line, relative to the list; `#` and `//` comments;
+/// `-top NAME` / `+top+NAME` name the top. Returns (files, top).
+pub fn read_filelist(
+    path: &std::path::Path,
+) -> Result<(Vec<std::path::PathBuf>, Option<String>), String> {
+    let text = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text = String::from_utf8_lossy(&text);
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let (mut files, mut top) = (Vec::new(), None);
+    let mut words = text
+        .lines()
+        .map(|l| {
+            l.split('#')
+                .next()
+                .unwrap_or("")
+                .split("//")
+                .next()
+                .unwrap_or("")
+                .trim()
+        })
+        .flat_map(|l| l.split_whitespace());
+    while let Some(w) = words.next() {
+        if w == "-top" {
+            top = words.next().map(String::from);
+        } else if let Some(t) = w.strip_prefix("+top+") {
+            top = Some(t.to_string());
+        } else if !w.starts_with(['-', '+']) {
+            files.push(dir.join(w));
+        }
+    }
+    if files.is_empty() {
+        return Err(format!("{}: no source files listed", path.display()));
+    }
+    Ok((files, top))
+}
+
+/// What the files declare: entity ports (for filling instances) and which file defines each entity.
+#[derive(Default)]
+pub struct Library {
+    pub ports: HashMap<String, Vec<Port>>,
+    pub file_of: HashMap<String, std::path::PathBuf>,
+    /// Entity names (lowercase) in file order.
+    pub order: Vec<String>,
+    /// Entities some other entity instantiates (what is left over are the candidate tops).
+    pub instantiated: std::collections::HashSet<String>,
+}
+
+pub fn library(files: &[std::path::PathBuf]) -> Library {
+    let mut lib = Library::default();
     for f in files {
-        let Ok(bytes) = std::fs::read(&f) else {
+        let Ok(bytes) = std::fs::read(f) else {
             continue;
         };
         let des = parse_file(&f.to_string_lossy(), &String::from_utf8_lossy(&bytes));
         for (k, v) in des.entities {
-            lib.entry(k).or_insert(v);
+            lib.order.push(k.clone());
+            lib.file_of.entry(k.clone()).or_insert_with(|| f.clone());
+            lib.ports.entry(k).or_insert(v);
         }
+        lib.instantiated
+            .extend(des.instances.iter().map(|i| i.entity.to_ascii_lowercase()));
     }
     lib
 }
