@@ -128,6 +128,12 @@ pub fn connect(d: &mut Diagram, a: Ep, b: Ep) -> Result<String, String> {
     }
     let sa = signal_mut(d, a).ok_or("no such pin")?.clone();
     let sb = signal_mut(d, b).ok_or("no such pin")?.clone();
+    // a top-level pin's signal is the port's own name: it wins over an internal net name
+    let (sa, sb, a, b) = if matches!(b, Ep::Top(_)) && live(&sb) && !matches!(a, Ep::Top(_)) {
+        (sb, sa, b, a)
+    } else {
+        (sa, sb, a, b)
+    };
     let name = if live(&sa) {
         sa.clone()
     } else if live(&sb) {
@@ -441,5 +447,23 @@ mod tests {
         assert_eq!(d.instances[2].ports[0].signal, "");
         assert_eq!(hit_pin(&[(0, 0), (100, 0)], (98.0, 2.0), 8.0), Some(1));
         assert_eq!(hit_pin(&[(0, 0)], (50.0, 50.0), 8.0), None);
+    }
+
+    #[test]
+    fn merging_into_a_top_pin_keeps_the_port_name() {
+        use crate::model::{Direction, Instance, Port};
+        let mut d = Diagram {
+            instances: vec![Instance::new(
+                "u",
+                "E",
+                vec![Port::new("p", Direction::In, "internal")],
+            )],
+            top_level_pins: vec![Port::new("clkin", Direction::In, "clkin")],
+            ..Default::default()
+        };
+        let name = connect(&mut d, Ep::Inst { inst: 0, port: 0 }, Ep::Top(0)).unwrap();
+        assert_eq!(name, "clkin");
+        assert_eq!(d.instances[0].ports[0].signal, "clkin");
+        assert_eq!(d.top_level_pins[0].signal, "clkin");
     }
 }

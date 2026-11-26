@@ -6,10 +6,20 @@ use std::collections::HashMap;
 
 const MAX_COPIES: i64 = 256;
 
-/// Replace the whole word `var` by `val`.
+/// Replace the whole word `var` (any case: VHDL is case-insensitive) by `val`, except where it is
+/// a port name: `var =>` (VHDL formal) or `.var(` (SystemVerilog named port).
 fn subst(body: &str, var: &str, val: &str) -> String {
-    let re = Regex::new(&format!(r"\b{}\b", regex::escape(var))).unwrap();
-    re.replace_all(body, val).into_owned()
+    let re = Regex::new(&format!(r"(?i)\b{}\b", regex::escape(var))).unwrap();
+    let (mut out, mut last) = (String::new(), 0);
+    for m in re.find_iter(body) {
+        let formal =
+            body[m.end()..].trim_start().starts_with("=>") || body[..m.start()].ends_with('.');
+        out.push_str(&body[last..m.start()]);
+        out.push_str(if formal { m.as_str() } else { val });
+        last = m.end();
+    }
+    out.push_str(&body[last..]);
+    out
 }
 
 fn values(from: i64, to: i64, step: i64) -> Option<Vec<i64>> {
@@ -224,5 +234,33 @@ endmodule",
         let names: Vec<_> = d.instances.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["u[0]", "u[1]", "u[2]", "u[3]"]);
         assert_eq!(d.instances[3].ports[0].signal, "a[3]");
+    }
+}
+
+#[cfg(test)]
+mod bughunt {
+    use crate::parser::{sv::parse_sv, vhdl::parse_vhdl};
+
+    #[test]
+    fn formal_named_like_the_loop_variable_survives() {
+        let d = parse_vhdl(
+            "entity t is port (a : in std_logic_vector(1 downto 0)); end entity;
+architecture x of t is begin
+ g : for I in 0 to 1 generate
+   u : entity work.f port map (i => a(i));
+ end generate g;
+end;",
+        );
+        assert_eq!(d.instances[1].ports[0].name, "i");
+        assert_eq!(d.instances[1].ports[0].signal, "a(1)");
+        let d = parse_sv(
+            "module t(input [1:0] a); genvar i;
+ for (i = 0; i < 2; i = i + 1) begin : g
+   f u (.i(a[i]));
+ end
+endmodule",
+        );
+        assert_eq!(d.instances[1].ports[0].name, "i");
+        assert_eq!(d.instances[1].ports[0].signal, "a[1]");
     }
 }

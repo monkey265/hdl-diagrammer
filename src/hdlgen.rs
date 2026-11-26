@@ -35,7 +35,12 @@ fn ident(name: &str) -> String {
             }
         })
         .collect();
-    s.trim_end_matches('_').to_string()
+    let s = s.trim_end_matches('_');
+    if s.is_empty() || s.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("u_{s}")
+    } else {
+        s.to_string()
+    }
 }
 
 fn connected(sig: &str) -> bool {
