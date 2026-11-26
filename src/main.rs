@@ -5,6 +5,7 @@ mod edit;
 mod gates;
 mod geometry;
 mod group;
+mod hdlgen;
 mod history;
 mod interface;
 mod layout;

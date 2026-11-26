@@ -66,6 +66,8 @@ pub struct App {
     pub async_route: bool,
     route_rx: Option<std::sync::mpsc::Receiver<Routed>>,
     route_dirty: bool,
+    /// After opening a design, fit the view again once its wires arrive (they extend past the blocks).
+    refit_after_route: bool,
 }
 
 type Routed = (Vec<Wire>, Vec<Stub>, Vec<(String, Pt)>);
@@ -122,6 +124,7 @@ impl Default for App {
             async_route: false,
             route_rx: None,
             route_dirty: false,
+            refit_after_route: false,
         }
     }
 }
@@ -150,6 +153,7 @@ impl App {
         recent::save(&self.recent);
         self.refresh();
         self.canvas.fit_requested = true;
+        self.refit_after_route = true;
     }
 
     /// Hand the diagram to the Tcl interpreter (it edits the same state and history as the GUI).
@@ -188,6 +192,7 @@ impl App {
         if s.opened {
             self.canvas.highlight = None;
             self.canvas.fit_requested = true;
+            self.refit_after_route = true;
         }
         self.refresh();
     }
@@ -353,6 +358,30 @@ impl App {
         }
     }
 
+    fn export_hdl(&mut self) {
+        let Some(p) = rfd::FileDialog::new()
+            .add_filter("VHDL", &["vhd"])
+            .add_filter("SystemVerilog", &["sv"])
+            .set_file_name("top.vhd")
+            .save_file()
+        else {
+            return;
+        };
+        let name = if self.top.is_empty() {
+            "top"
+        } else {
+            &self.top
+        };
+        let text = if p.extension().is_some_and(|e| e == "sv" || e == "v") {
+            crate::hdlgen::to_sv(&self.diagram, &self.signals, name)
+        } else {
+            crate::hdlgen::to_vhdl(&self.diagram, &self.signals, name)
+        };
+        if let Err(e) = std::fs::write(&p, text) {
+            self.warnings = vec![format!("cannot write {}: {e}", p.display())];
+        }
+    }
+
     fn export_image(&mut self) {
         let Some(p) = rfd::FileDialog::new()
             .add_filter("SVG", &["svg"])
@@ -412,6 +441,10 @@ impl App {
                 Ok((w, st, j)) => {
                     (self.wires, self.stubs, self.junctions) = (w, st, j);
                     self.route_rx = None;
+                    if self.refit_after_route && !self.route_dirty {
+                        self.refit_after_route = false;
+                        self.canvas.fit_requested = true;
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     ctx.request_repaint_after(std::time::Duration::from_millis(40));
@@ -578,6 +611,14 @@ impl App {
                     self.persist_views();
                 }
             }
+            Action::Connect(a, b) => {
+                let mut result = Ok(String::new());
+                self.edit(|d| result = edit::connect(d, a, b));
+                if let Err(e) = result {
+                    self.warnings = vec![e];
+                }
+            }
+            Action::Disconnect(e) => self.edit(|d| edit::disconnect(d, e)),
             Action::CollapseInterfaces => self.edit(|d| {
                 crate::interface::collapse_all(d, g);
             }),
@@ -722,6 +763,10 @@ impl eframe::App for App {
                     if ui.button("Export SVG/PNG…").clicked() {
                         ui.close();
                         self.export_image();
+                    }
+                    if ui.button("Export HDL…").clicked() {
+                        ui.close();
+                        self.export_hdl();
                     }
                 });
                 ui.menu_button("Edit", |ui| {

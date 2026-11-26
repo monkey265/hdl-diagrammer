@@ -25,7 +25,9 @@ pub(super) fn guess_direction(port: &str) -> Direction {
     }
 }
 
-fn parse_ports(body: &str) -> Vec<Port> {
+/// Ports plus each port's declared type text (after the direction, default value dropped).
+fn parse_ports_typed(body: &str) -> (Vec<Port>, Vec<(String, String)>) {
+    let mut types = Vec::new();
     let mut out = Vec::new();
     for decl in split_top_level(body, ';') {
         let Some((names, rest)) = decl.split_once(':') else {
@@ -45,10 +47,14 @@ fn parse_ports(body: &str) -> Vec<Port> {
             let n = n.trim();
             if !n.is_empty() {
                 out.push(Port::new(n, dir, n));
+                let ty = rest.trim_start();
+                let ty = ty.split_once(char::is_whitespace).map_or("", |x| x.1);
+                let ty = ty.split(":=").next().unwrap_or("");
+                types.push((n.to_string(), squash(ty)));
             }
         }
     }
-    out
+    (out, types)
 }
 
 #[cfg(test)]
@@ -80,6 +86,7 @@ pub fn parse_vhdl_top(text: &str, want: Option<&str>) -> Design {
     let port_re = Regex::new(r"(?i)\bport\s*\(").unwrap();
     let end_re = Regex::new(r"(?i)\bend\b").unwrap();
     let mut entities: Vec<(String, Vec<Port>)> = Vec::new();
+    let mut port_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for m in ent_re.captures_iter(&src) {
         let after = m.get(0).unwrap().end();
         let rest = &src[after..];
@@ -87,9 +94,11 @@ pub fn parse_vhdl_top(text: &str, want: Option<&str>) -> Design {
         let ports = match port_re.find(rest) {
             Some(p) if p.start() < end_at => {
                 let open = after + p.end() - 1;
-                balanced_parens(&src, open)
-                    .map(parse_ports)
-                    .unwrap_or_default()
+                let (ports, types) = balanced_parens(&src, open)
+                    .map(parse_ports_typed)
+                    .unwrap_or_default();
+                port_types.insert(m[1].to_ascii_lowercase(), types);
+                ports
             }
             _ => Vec::new(),
         };
@@ -197,6 +206,14 @@ pub fn parse_vhdl_top(text: &str, want: Option<&str>) -> Design {
     if let Some((n, p)) = top {
         d.top_name = n.clone();
         d.top_ports = p.clone();
+        // the top's port types join the signal table: export needs them, and buses get bus colours
+        for (pn, ty) in port_types
+            .get(&n.to_ascii_lowercase())
+            .into_iter()
+            .flatten()
+        {
+            d.signals.entry(pn.clone()).or_insert_with(|| ty.clone());
+        }
     }
     d
 }

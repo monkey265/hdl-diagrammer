@@ -33,6 +33,8 @@ pub enum Action {
     SaveView,
     GotoView(usize),
     DeleteView(usize),
+    Connect(crate::net::Ep, crate::net::Ep),
+    Disconnect(crate::net::Ep),
     CollapseInterfaces,
     ExpandInterfaces,
     Validate,

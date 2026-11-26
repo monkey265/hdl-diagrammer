@@ -166,6 +166,61 @@ fn view(s: &mut Session, a: &[String]) -> Result<Value, String> {
     }
 }
 
+/// `inst.port` or `pin:name`.
+fn endpoint(d: &Diagram, text: &str) -> Result<crate::net::Ep, String> {
+    use crate::net::Ep;
+    if let Some(n) = text.strip_prefix("pin:") {
+        return d
+            .top_level_pins
+            .iter()
+            .position(|p| p.name == n)
+            .map(Ep::Top)
+            .ok_or_else(|| format!("no top-level pin \"{n}\""));
+    }
+    let (inst, port) = text
+        .rsplit_once('.')
+        .ok_or_else(|| format!("expected inst.port or pin:name but got \"{text}\""))?;
+    let i = find(d, inst)?;
+    let p = d.instances[i]
+        .ports
+        .iter()
+        .position(|p| p.name == port)
+        .ok_or_else(|| format!("\"{inst}\" has no port \"{port}\""))?;
+    Ok(Ep::Inst { inst: i, port: p })
+}
+
+fn connect(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let (x, y) = (endpoint(&s.diagram, &a[0])?, endpoint(&s.diagram, &a[1])?);
+    let mut net = String::new();
+    s.edit(|d, _| {
+        net = edit::connect(d, x, y)?;
+        Ok(())
+    })?;
+    Ok(Value::from(net))
+}
+
+fn disconnect(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let e = endpoint(&s.diagram, &a[0])?;
+    s.edit(|d, _| {
+        edit::disconnect(d, e);
+        Ok(())
+    })
+}
+
+fn exporthdl(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let name = if s.top.is_empty() { "top" } else { &s.top };
+    let sv = ["sv", "v"]
+        .iter()
+        .any(|e| a[0].to_ascii_lowercase().ends_with(e));
+    let text = if sv {
+        crate::hdlgen::to_sv(&s.diagram, &s.signals, name)
+    } else {
+        crate::hdlgen::to_vhdl(&s.diagram, &s.signals, name)
+    };
+    std::fs::write(&a[0], text).map_err(|e| format!("cannot write {}: {e}", a[0]))?;
+    Ok(Value::empty())
+}
+
 fn save(s: &mut Session, a: &[String]) -> Result<Value, String> {
     std::fs::write(&a[0], s.diagram.to_json()).map_err(|e| format!("cannot save {}: {e}", a[0]))?;
     Ok(Value::empty())
@@ -371,6 +426,15 @@ pub fn command_names() -> impl Iterator<Item = &'static str> {
 /// (name, usage after the name, min args, max args, handler)
 const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     ("open", "file ?top?", 1, 2, open),
+    (
+        "connect",
+        "inst.port|pin:name inst.port|pin:name",
+        2,
+        2,
+        connect,
+    ),
+    ("disconnect", "inst.port|pin:name", 1, 1, disconnect),
+    ("exporthdl", "file.vhd|file.sv", 1, 1, exporthdl),
     ("view", "list|save|goto|delete ?name?", 1, 2, view),
     ("descend", "inst", 1, 1, descend),
     ("ascend", "", 0, 0, ascend),
@@ -782,5 +846,23 @@ architecture x of mid is begin u_leaf : entity work.leaf port map (i => i, o => 
         assert_eq!(s.eval("view list").unwrap(), "b");
         assert!(s.eval("view goto a").is_err());
         assert!(s.eval("view").is_err());
+    }
+
+    #[test]
+    fn connect_disconnect_and_hdl_export_commands() {
+        let mut s = script();
+        let first = names(&mut s)[0].clone();
+        let p0 = s.session().diagram.instances[0].ports[0].name.clone();
+        let pin = s.session().diagram.top_level_pins[0].name.clone();
+        let net = s.eval(&format!("connect {first}.{p0} pin:{pin}")).unwrap();
+        assert!(!net.is_empty());
+        s.eval(&format!("disconnect {first}.{p0}")).unwrap();
+        assert!(s.eval("connect nope.x pin:y").is_err());
+        assert!(s.eval("connect junk junk").is_err());
+        let f = std::env::temp_dir().join(format!("hdl_exp_{}.vhd", std::process::id()));
+        s.eval(&format!("exporthdl {}", f.display())).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        std::fs::remove_file(f).ok();
+        assert!(text.contains("entity ") && text.contains("port map"));
     }
 }
