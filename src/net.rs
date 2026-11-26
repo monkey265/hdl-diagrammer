@@ -4,7 +4,7 @@ use crate::group::active_instances;
 use crate::layout::{arrange_grid, port_pos};
 use crate::model::{Diagram, Direction};
 use crate::parser::Design;
-use crate::router::{Bounds, Router, WireOcc};
+use crate::router::{Bounds, DirOcc, Router, WireOcc};
 use std::collections::{HashMap, HashSet};
 
 /// One end of a wire: an instance port or a top-level pin.
@@ -294,8 +294,17 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
         .map(|i| (i.x, i.y, i.width, i.height))
         .collect();
     let occ = router.build_occupancy(&blocks, bounds, 30);
-    let mut wire_occ = WireOcc::new();
+    let mut wire_occ = DirOcc::default();
     let mut wires = Vec::new();
+    let mut routed = routed;
+    let span = |s: &String| {
+        let e = &nets[s];
+        let xs = e.iter().map(|n| n.1.0);
+        let ys = e.iter().map(|n| n.1.1);
+        (xs.clone().max().unwrap() - xs.min().unwrap())
+            + (ys.clone().max().unwrap() - ys.min().unwrap())
+    };
+    routed.sort_by_key(|s| span(s)); // short nets first: they get the straight runs
     for sig in routed {
         let eps = &nets[sig];
         let src = eps.iter().find(|e| e.2).unwrap_or(&eps[0]);
@@ -306,9 +315,14 @@ pub fn route_all_opts(d: &Diagram, stub_globals: bool) -> Routing {
             poly.push(dst.1);
             let poly = compress_polyline(&poly);
             let segments: Vec<Seg> = poly.windows(2).map(|w| (w[0], w[1])).collect();
-            segments
-                .iter()
-                .for_each(|&s| mark_segment(s, sig, GRID_STEP, &mut wire_occ));
+            segments.iter().for_each(|&s| {
+                let m = if s.0.1 == s.1.1 {
+                    &mut wire_occ.h
+                } else {
+                    &mut wire_occ.v
+                };
+                mark_segment(s, sig, GRID_STEP, m);
+            });
             wires.push(Wire {
                 signal: sig.clone(),
                 src: src.0,
@@ -482,10 +496,10 @@ mod tests {
 
     #[test]
     fn different_nets_rarely_run_on_top_of_each_other() {
-        // before lanes/auto layout (stubs mode): radio 975 cells, rc4 53; keep well below that
+        // stubs mode: radio 975 -> 24 cells, rc4 53 -> 2 (directional costs, short nets first)
         for (src, limit) in [
-            (include_str!("../tests/fixtures/radio_top.vhd"), 450),
-            (include_str!("../tests/fixtures/RC4_sync_top.vhd"), 20),
+            (include_str!("../tests/fixtures/radio_top.vhd"), 80),
+            (include_str!("../tests/fixtures/RC4_sync_top.vhd"), 10),
         ] {
             let d = design_to_diagram(&crate::parser::vhdl::parse_vhdl(src), 20);
             let w = route_all_opts(&d, true).wires;
