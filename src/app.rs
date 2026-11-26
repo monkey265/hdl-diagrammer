@@ -57,7 +57,13 @@ pub struct App {
     hist_pos: Option<usize>,
     show_structure: bool,
     show_objects: bool,
+    /// GUI only: route on a worker thread so big diagrams do not freeze the window.
+    pub async_route: bool,
+    route_rx: Option<std::sync::mpsc::Receiver<Routed>>,
+    route_dirty: bool,
 }
+
+type Routed = (Vec<Wire>, Vec<Stub>, Vec<(String, Pt)>);
 
 #[derive(Clone, Copy)]
 enum LogKind {
@@ -104,6 +110,9 @@ impl Default for App {
             hist_pos: None,
             show_structure: true,
             show_objects: true,
+            async_route: false,
+            route_rx: None,
+            route_dirty: false,
         }
     }
 }
@@ -335,10 +344,43 @@ impl App {
     /// Re-route after any change to the diagram.
     pub fn refresh(&mut self) {
         self.pin_pos = top_pin_positions(&self.diagram);
-        let r = route_all_opts(&self.diagram, self.stub_globals);
-        (self.wires, self.stubs) = (r.wires, r.stubs);
         self.pin_ok = pin_connected(&self.diagram);
-        self.junctions = wire_junctions(&self.diagram, &self.wires);
+        if self.async_route {
+            self.route_dirty = true; // `poll_route` starts the job; old wires stay until it ends
+        } else {
+            let r = route_all_opts(&self.diagram, self.stub_globals);
+            self.junctions = wire_junctions(&self.diagram, &r.wires);
+            (self.wires, self.stubs) = (r.wires, r.stubs);
+        }
+    }
+
+    /// Collect a finished routing job and start the next one if the diagram changed meanwhile.
+    fn poll_route(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.route_rx {
+            match rx.try_recv() {
+                Ok((w, st, j)) => {
+                    (self.wires, self.stubs, self.junctions) = (w, st, j);
+                    self.route_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(40));
+                    return;
+                }
+                Err(_) => self.route_rx = None,
+            }
+        }
+        if self.route_rx.is_none() && self.route_dirty {
+            self.route_dirty = false;
+            let (d, stubs) = (self.diagram.clone(), self.stub_globals);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let r = route_all_opts(&d, stubs);
+                let j = wire_junctions(&d, &r.wires);
+                let _ = tx.send((r.wires, r.stubs, j));
+            });
+            self.route_rx = Some(rx);
+            ctx.request_repaint_after(std::time::Duration::from_millis(40));
+        }
     }
 
     /// Apply `f`, record the previous state for undo, re-route.
@@ -537,6 +579,7 @@ fn ungroup_actions(selected: &[usize]) -> Vec<Action> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_route(ui.ctx());
         ui.ctx().set_visuals(if self.canvas.dark {
             questa_visuals()
         } else {
@@ -662,6 +705,9 @@ impl eframe::App for App {
                         ui.close();
                     }
                 });
+                if self.route_rx.is_some() || self.route_dirty {
+                    ui.weak("⟳ routing…");
+                }
             });
         });
         if let Some(p) = open {
@@ -900,5 +946,25 @@ mod tests {
         a.open_file(&p);
         std::fs::remove_file(&p).ok();
         assert_eq!(a.diagram.instances.len(), 1);
+    }
+
+    #[test]
+    fn async_routing_delivers_the_same_wires_in_the_end() {
+        let mut sync = App::default();
+        sync.open_file(Path::new("tests/fixtures/RC4_sync_top.vhd"));
+        let mut a = App::default();
+        a.async_route = true;
+        a.open_file(Path::new("tests/fixtures/RC4_sync_top.vhd"));
+        assert!(a.wires.is_empty(), "nothing routed until the job is polled");
+        let ctx = egui::Context::default();
+        for _ in 0..500 {
+            a.poll_route(&ctx);
+            if a.route_rx.is_none() && !a.route_dirty {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(a.wires.len(), sync.wires.len());
+        assert!(!a.wires.is_empty());
     }
 }

@@ -68,6 +68,11 @@ fn main() -> eframe::Result {
             viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
             ..Default::default()
         },
-        Box::new(move |_cc| Ok(Box::new(app))),
+        Box::new(move |_cc| {
+            let mut app = app;
+            app.async_route = true;
+            app.refresh();
+            Ok(Box::new(app))
+        }),
     )
 }
