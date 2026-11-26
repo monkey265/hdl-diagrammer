@@ -145,6 +145,19 @@ fn descend(s: &mut Session, a: &[String]) -> Result<Value, String> {
     Ok(Value::from(entity))
 }
 
+/// Tell the project where an entity is defined: `file` joins the project if it declares `entity`.
+fn mapsource(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let file = std::path::PathBuf::from(&a[1]);
+    let lib = crate::parser::library(std::slice::from_ref(&file));
+    if !lib.file_of.contains_key(&a[0].to_ascii_lowercase()) {
+        return Err(format!("{} does not declare entity \"{}\"", a[1], a[0]));
+    }
+    if !s.files.contains(&file) {
+        s.files.push(file);
+    }
+    Ok(Value::from(a[0].clone()))
+}
+
 fn ascend(s: &mut Session, _: &[String]) -> Result<Value, String> {
     let f = s.nav.pop().ok_or("already at the top level")?;
     (s.diagram, s.signals, s.warnings, s.history, s.top) =
@@ -459,6 +472,7 @@ const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     ("exporthdl", "file.vhd|file.sv", 1, 1, exporthdl),
     ("view", "list|save|goto|delete ?name?", 1, 2, view),
     ("descend", "inst", 1, 1, descend),
+    ("mapsource", "entity file", 2, 2, mapsource),
     ("ascend", "", 0, 0, ascend),
     ("save", "file.json", 1, 1, save),
     ("export", "file.svg|file.png", 1, 1, export),
@@ -898,5 +912,22 @@ architecture x of mid is begin u_leaf : entity work.leaf port map (i => i, o => 
         let text = std::fs::read_to_string(&f).unwrap();
         std::fs::remove_file(f).ok();
         assert!(text.contains("entity ") && text.contains("port map"));
+    }
+
+    #[test]
+    fn mapsource_adds_the_file_that_declares_the_entity() {
+        let dir = project("map");
+        let mut s = Script::new(20);
+        s.eval(&format!("open {}/top.vhd", dir.display())).unwrap();
+        assert!(
+            s.eval(&format!("mapsource leaf {}/top.vhd", dir.display()))
+                .is_err()
+        );
+        assert_eq!(
+            s.eval(&format!("mapsource leaf {}/leaf.vhd", dir.display()))
+                .unwrap(),
+            "leaf"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 }

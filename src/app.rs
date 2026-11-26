@@ -48,6 +48,8 @@ pub struct App {
     history: History<Diagram>,
     prompt: Option<Prompt>,
     group_dialog: Option<GroupDialog>,
+    /// (instance, entity, file) while asking where an entity's source is.
+    source_dialog: Option<(String, String, String)>,
     recent: Vec<String>,
     script: Script,
     console_open: bool,
@@ -140,6 +142,7 @@ impl Default for App {
             history: History::default(),
             prompt: None,
             group_dialog: None,
+            source_dialog: None,
             recent: recent::load(),
             script: Script::new(DEFAULT_GRID),
             console_open: true,
@@ -476,7 +479,15 @@ impl App {
                 self.canvas.highlight = None;
                 self.path = None;
             }
-            Err(e) => self.warnings = vec![e],
+            Err(e) => {
+                if let (Some(inst), true) =
+                    (cmd.strip_prefix("descend "), e.contains("no source found"))
+                {
+                    let entity = e.split('"').nth(1).unwrap_or_default().to_string();
+                    self.source_dialog = Some((inst.to_string(), entity, String::new()));
+                }
+                self.warnings = vec![e];
+            }
         }
     }
 
@@ -998,6 +1009,42 @@ impl eframe::App for App {
         }
         for a in actions {
             self.apply(a);
+        }
+        if let Some((inst, entity, mut file)) = self.source_dialog.take() {
+            let (mut ok, mut cancel) = (false, false);
+            egui::Window::new("Map source")
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(format!("No source found for entity \"{entity}\"."));
+                    ui.label("Choose the file that declares it:");
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut file);
+                        if ui.button("Browse…").clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .add_filter("HDL", &["vhd", "vhdl", "v", "sv", "svh"])
+                                .pick_file()
+                        {
+                            file = p.display().to_string();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ok = ui
+                            .add_enabled(!file.is_empty(), egui::Button::new("Map and open"))
+                            .clicked();
+                        cancel = ui.button("Cancel").clicked();
+                    });
+                });
+            if ok {
+                match self.run_script(&format!("mapsource {{{entity}}} {{{file}}}")) {
+                    Ok(_) => self.navigate(&format!("descend {inst}")),
+                    Err(e) => {
+                        self.warnings = vec![e];
+                        self.source_dialog = Some((inst, entity, file));
+                    }
+                }
+            } else if !cancel {
+                self.source_dialog = Some((inst, entity, file));
+            }
         }
         if let Some(mut gd) = self.group_dialog.take() {
             let (mut ok, mut cancel) = (false, false);
