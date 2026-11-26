@@ -4,7 +4,7 @@ use crate::group::active_instances;
 use crate::layout::{arrange_grid, port_pos};
 use crate::model::{Diagram, Direction};
 use crate::parser::Design;
-use crate::router::{Bounds, DirOcc, Router, WireOcc};
+use crate::router::{Bounds, DirOcc, Router};
 use std::collections::{HashMap, HashSet};
 
 /// One end of a wire: an instance port or a top-level pin.
@@ -354,6 +354,7 @@ pub fn wire_junctions(d: &Diagram, wires: &[Wire]) -> Vec<(String, Pt)> {
 mod tests {
     use super::*;
     use crate::model::{Instance, Port};
+    use crate::router::WireOcc;
 
     fn two_blocks() -> Diagram {
         let a = Instance::new(
