@@ -31,6 +31,10 @@ pub struct Session {
     pub files: Vec<std::path::PathBuf>,
     pub nav: Vec<Frame>,
     pub top: String,
+    /// Saved views; `view_now` is the canvas (pan x, pan y, zoom) lent in, `goto` the one asked for.
+    pub views: Vec<crate::views::SavedView>,
+    pub view_now: (f32, f32, f32),
+    pub goto: Option<(f32, f32, f32)>,
     /// Text from `puts` since the last `eval`, shown in the GUI transcript.
     pub output: Vec<String>,
     /// Set by `open`; the GUI reacts by refitting the view and dropping its selection.
@@ -125,6 +129,41 @@ fn ascend(s: &mut Session, _: &[String]) -> Result<Value, String> {
         (f.diagram, f.signals, f.warnings, f.history, f.top);
     s.opened = true;
     Ok(Value::empty())
+}
+
+fn view(s: &mut Session, a: &[String]) -> Result<Value, String> {
+    let find = |s: &Session, n: &str| {
+        s.views
+            .iter()
+            .position(|v| v.name == n)
+            .ok_or_else(|| format!("no saved view \"{n}\""))
+    };
+    match (a[0].as_str(), a.get(1)) {
+        ("list", None) => Ok(list(s.views.iter().map(|v| v.name.clone()))),
+        ("save", Some(n)) => {
+            let (x, y, zoom) = s.view_now;
+            crate::views::put(
+                &mut s.views,
+                crate::views::SavedView {
+                    name: n.clone(),
+                    pan: (x, y),
+                    zoom,
+                },
+            );
+            Ok(Value::empty())
+        }
+        ("goto", Some(n)) => {
+            let v = &s.views[find(s, n)?];
+            s.goto = Some((v.pan.0, v.pan.1, v.zoom));
+            Ok(Value::empty())
+        }
+        ("delete", Some(n)) => {
+            let i = find(s, n)?;
+            s.views.remove(i);
+            Ok(Value::empty())
+        }
+        _ => Err("usage: view list | view save|goto|delete name".into()),
+    }
 }
 
 fn save(s: &mut Session, a: &[String]) -> Result<Value, String> {
@@ -332,6 +371,7 @@ pub fn command_names() -> impl Iterator<Item = &'static str> {
 /// (name, usage after the name, min args, max args, handler)
 const COMMANDS: &[(&str, &str, usize, usize, Handler)] = &[
     ("open", "file ?top?", 1, 2, open),
+    ("view", "list|save|goto|delete ?name?", 1, 2, view),
     ("descend", "inst", 1, 1, descend),
     ("ascend", "", 0, 0, ascend),
     ("save", "file.json", 1, 1, save),
@@ -726,5 +766,21 @@ architecture x of mid is begin u_leaf : entity work.leaf port map (i => i, o => 
         s.eval(&format!("open {}/p.f mid", dir.display())).unwrap();
         assert_eq!(s.eval("instances").unwrap(), "u_leaf");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn view_commands_save_goto_delete() {
+        let mut s = script();
+        s.session().view_now = (10.0, 20.0, 1.5);
+        s.eval("view save a").unwrap();
+        s.session().view_now = (0.0, 0.0, 1.0);
+        s.eval("view save b").unwrap();
+        assert_eq!(s.eval("view list").unwrap(), "a b");
+        s.eval("view goto a").unwrap();
+        assert_eq!(s.session().goto, Some((10.0, 20.0, 1.5)));
+        s.eval("view delete a").unwrap();
+        assert_eq!(s.eval("view list").unwrap(), "b");
+        assert!(s.eval("view goto a").is_err());
+        assert!(s.eval("view").is_err());
     }
 }

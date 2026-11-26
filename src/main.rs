@@ -18,6 +18,7 @@ mod script;
 mod svg;
 mod ui;
 mod validate;
+mod views;
 
 const USAGE: &str = "usage: hdl-diagrammer [file.vhd|.sv|.json] [--script file.tcl [--gui]]
   --script  run a Tcl script (headless unless --gui is also given)";

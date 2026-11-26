@@ -30,6 +30,9 @@ pub enum Action {
     Descend(usize),
     /// Back to the diagram above.
     Ascend,
+    SaveView,
+    GotoView(usize),
+    DeleteView(usize),
     CollapseInterfaces,
     ExpandInterfaces,
     Validate,

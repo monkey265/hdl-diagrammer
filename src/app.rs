@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 enum PromptKind {
+    SaveView,
     RenameInstance(usize),
     RenamePort(usize, usize),
     SetSize(usize),
@@ -57,6 +58,7 @@ pub struct App {
     hist_pos: Option<usize>,
     show_structure: bool,
     show_objects: bool,
+    views: Vec<crate::views::SavedView>,
     files: Vec<PathBuf>,
     nav: Vec<crate::script::Frame>,
     top: String,
@@ -113,6 +115,7 @@ impl Default for App {
             hist_pos: None,
             show_structure: true,
             show_objects: true,
+            views: vec![],
             files: vec![],
             nav: vec![],
             top: String::new(),
@@ -139,6 +142,7 @@ impl App {
         }
         let name = path.to_string_lossy().into_owned();
         self.path = Some(path.to_path_buf());
+        self.views = crate::views::load(path);
         self.history.clear();
         self.drop_index_state();
         self.canvas.highlight = None;
@@ -156,6 +160,8 @@ impl App {
             warnings: std::mem::take(&mut self.warnings),
             grid: self.grid,
             history: std::mem::take(&mut self.history),
+            views: std::mem::take(&mut self.views),
+            view_now: (self.canvas.pan.x, self.canvas.pan.y, self.canvas.zoom),
             files: std::mem::take(&mut self.files),
             nav: std::mem::take(&mut self.nav),
             top: std::mem::take(&mut self.top),
@@ -170,6 +176,14 @@ impl App {
         (self.diagram, self.signals, self.warnings, self.history) =
             (s.diagram, s.signals, s.warnings, s.history);
         (self.files, self.nav, self.top) = (s.files, s.nav, s.top);
+        if s.views != self.views {
+            self.views = s.views;
+            self.persist_views();
+        }
+        if let Some((x, y, z)) = s.goto {
+            (self.canvas.pan, self.canvas.zoom) = (egui::vec2(x, y), z);
+            self.canvas.fit_requested = false;
+        }
         self.drop_index_state();
         if s.opened {
             self.canvas.highlight = None;
@@ -350,6 +364,12 @@ impl App {
         };
         if let Err(e) = crate::svg::write(&p, &self.diagram, &self.signals) {
             self.warnings = vec![e];
+        }
+    }
+
+    fn persist_views(&self) {
+        if let Some(p) = &self.path {
+            crate::views::save(p, &self.views);
         }
     }
 
@@ -535,6 +555,29 @@ impl App {
                 }
             }
             Action::Ascend => self.navigate("ascend"),
+            Action::SaveView => {
+                let name = (1..)
+                    .map(|n| format!("View {n}"))
+                    .find(|n| self.views.iter().all(|v| &v.name != n))
+                    .expect("infinite range");
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::SaveView,
+                    title: "Save view as",
+                    text: name,
+                });
+            }
+            Action::GotoView(i) => {
+                if let Some(v) = self.views.get(i) {
+                    (self.canvas.pan, self.canvas.zoom) = (egui::vec2(v.pan.0, v.pan.1), v.zoom);
+                    self.canvas.fit_requested = false;
+                }
+            }
+            Action::DeleteView(i) => {
+                if i < self.views.len() {
+                    self.views.remove(i);
+                    self.persist_views();
+                }
+            }
             Action::CollapseInterfaces => self.edit(|d| {
                 crate::interface::collapse_all(d, g);
             }),
@@ -581,6 +624,15 @@ impl App {
         let g = self.grid;
         let t = p.text.trim().to_string();
         match p.kind {
+            PromptKind::SaveView if !t.is_empty() => {
+                let v = crate::views::SavedView {
+                    name: t,
+                    pan: (self.canvas.pan.x, self.canvas.pan.y),
+                    zoom: self.canvas.zoom,
+                };
+                crate::views::put(&mut self.views, v);
+                self.persist_views();
+            }
             PromptKind::RenameInstance(i) if !t.is_empty() => self.edit(|d| {
                 if let Some(n) = d.instances.get_mut(i) {
                     n.name = t;
@@ -745,6 +797,24 @@ impl eframe::App for App {
                     for (label, g) in GRID_OPTIONS {
                         ui.radio_value(&mut self.grid, g, label);
                     }
+                    ui.menu_button("Bookmarks", |ui| {
+                        if ui.button("Save view…").clicked() {
+                            actions.push(Action::SaveView);
+                            ui.close();
+                        }
+                        for (i, v) in self.views.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui.button(&v.name).clicked() {
+                                    actions.push(Action::GotoView(i));
+                                    ui.close();
+                                }
+                                if ui.small_button("✕").clicked() {
+                                    actions.push(Action::DeleteView(i));
+                                    ui.close();
+                                }
+                            });
+                        }
+                    });
                     if ui.button("Zoom to fit").clicked() {
                         self.canvas.fit_requested = true;
                         ui.close();
