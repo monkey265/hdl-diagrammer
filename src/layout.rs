@@ -242,16 +242,34 @@ fn layout_nodes(d: &mut crate::model::Diagram, grid: i32, pick: &dyn Fn(usize) -
     }
     let height =
         |c: &[usize]| c.iter().map(|&k| h(k)).sum::<i32>() + 60 * c.len().saturating_sub(1) as i32;
-    let tallest = chunks.iter().map(|(_, c)| height(c)).max().unwrap_or(0);
-    let mut x = 50;
+    // columns left to right; a layout wider than MAX_W wraps into bands stacked downwards
+    const MAX_W: i32 = 3000;
     let mut place: Vec<(usize, i32, i32)> = Vec::new();
-    for (ci, (l, c)) in chunks.iter().enumerate() {
-        let mut y = 40 + (tallest - height(c)) / 2;
-        for &k in c {
-            place.push((nodes[k], x, y));
-            y += h(k) + 60;
+    let (mut x, mut band_top) = (50, 40);
+    let mut band: Vec<(usize, i32)> = Vec::new(); // (chunk index, x)
+    let mut flush = |band: &mut Vec<(usize, i32)>, band_top: &mut i32| {
+        let tallest = band
+            .iter()
+            .map(|&(ci, _)| height(&chunks[ci].1))
+            .max()
+            .unwrap_or(0);
+        for &(ci, cx) in band.iter() {
+            let mut y = *band_top + (tallest - height(&chunks[ci].1)) / 2;
+            for &k in &chunks[ci].1 {
+                place.push((nodes[k], cx, y));
+                y += h(k) + 60;
+            }
         }
+        *band_top += tallest + 120;
+        band.clear();
+    };
+    for (ci, (l, c)) in chunks.iter().enumerate() {
         let colw = c.iter().map(|&k| w(k)).max().unwrap_or(0);
+        if !band.is_empty() && x + colw > MAX_W {
+            flush(&mut band, &mut band_top);
+            x = 50;
+        }
+        band.push((ci, x));
         let last_of_layer = chunks.get(ci + 1).is_none_or(|n| n.0 != *l);
         let crossing = if last_of_layer {
             fwd.iter()
@@ -262,6 +280,7 @@ fn layout_nodes(d: &mut crate::model::Diagram, grid: i32, pick: &dyn Fn(usize) -
         };
         x += colw + if last_of_layer { 180 } else { 80 } + 10 * crossing.min(24);
     }
+    flush(&mut band, &mut band_top);
     for (i, px, py) in place {
         crate::edit::move_block(d, i, px, py, grid);
     }
@@ -515,6 +534,16 @@ mod tests {
         assert_eq!((d.instances[3].x, d.instances[3].y), other);
         assert!(d.instances[0].x < d.instances[1].x && d.instances[1].x < d.instances[2].x);
         assert_eq!(d.instances[..3].iter().map(|i| i.x).min(), Some(1000));
+        assert!(no_overlap(&d));
+    }
+
+    #[test]
+    fn wide_layouts_wrap_into_bands() {
+        // 40 blocks in a chain are 40 layers deep: a single row would be ~10000 wide
+        let mut d = chain(40, false);
+        auto_layout(&mut d, 20);
+        let w = d.instances.iter().map(|i| i.x + i.width).max().unwrap();
+        assert!(w <= 3300, "width {w}");
         assert!(no_overlap(&d));
     }
 
